@@ -1,6 +1,13 @@
-﻿node_modules/
+node_modules/
 dist/
 .vite/
 *.log
 .DS_Store
 Thumbs.db
+
+*.tsbuildinfo
+
+src/**/*.js
+tests/**/*.js
+vite.config.js
+tsconfig.tsbuildinfo
