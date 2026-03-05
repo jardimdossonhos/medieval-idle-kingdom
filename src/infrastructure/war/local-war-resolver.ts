@@ -1,7 +1,8 @@
 ﻿import type { WarResolver } from "../../core/contracts/services";
-import { DiplomaticRelation, TreatyType } from "../../core/models/enums";
 import type { Treaty } from "../../core/models/diplomacy";
+import { DiplomaticRelation, TreatyType } from "../../core/models/enums";
 import type { GameState, KingdomState, WarFront, WarState } from "../../core/models/game-state";
+import { buildTreatyId, buildWarId, sortUniqueIds } from "../../core/models/identifiers";
 import type { KingdomId } from "../../core/models/types";
 
 const PEACE_TREATY_DURATION_MS = 1000 * 60 * 28;
@@ -108,10 +109,11 @@ function addPeaceTreaty(state: GameState, leftId: KingdomId, rightId: KingdomId,
     return;
   }
 
+  const parties = sortUniqueIds([leftId, rightId]);
   const treaty: Treaty = {
-    id: `treaty_peace_${leftId}_${rightId}`,
+    id: buildTreatyId(TreatyType.Peace, parties, signedAt),
     type: TreatyType.Peace,
-    parties: [leftId, rightId],
+    parties,
     signedAt,
     expiresAt: signedAt + PEACE_TREATY_DURATION_MS,
     terms: {
@@ -127,7 +129,8 @@ function addPeaceTreaty(state: GameState, leftId: KingdomId, rightId: KingdomId,
 function findBorderFronts(state: GameState, attackerId: KingdomId, defenderId: KingdomId): WarFront[] {
   const attackerRegions = Object.values(state.world.regions)
     .filter((region) => region.ownerId === attackerId)
-    .map((region) => region.regionId).sort();
+    .map((region) => region.regionId)
+    .sort();
 
   const defenderRegionSet = new Set(
     Object.values(state.world.regions)
@@ -291,7 +294,11 @@ export class LocalWarResolver implements WarResolver {
       return state;
     }
 
-    const warId = `war_${attackerId}_${defenderId}_${state.meta.tick}`;
+    const warId = buildWarId(attackerId, defenderId, state.meta.tick);
+    if (state.wars[warId]) {
+      return state;
+    }
+
     const fronts = findBorderFronts(state, attackerId, defenderId);
 
     state.wars[warId] = {

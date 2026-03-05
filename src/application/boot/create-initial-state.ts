@@ -12,6 +12,7 @@ import {
   VictoryPath
 } from "../../core/models/enums";
 import type { GameState, KingdomState } from "../../core/models/game-state";
+import { buildTreatyId, sortUniqueIds } from "../../core/models/identifiers";
 import type { PopulationState } from "../../core/models/population";
 import type { RegionDefinition, WorldState } from "../../core/models/world";
 import { SEED_REGION_DEFINITIONS } from "./seed-map-definitions";
@@ -65,6 +66,10 @@ function createBaseEconomy(seedGold: number): EconomyState {
 }
 
 function createKingdom(id: string, name: string, adjective: string, capitalRegionId: string, isPlayer: boolean): KingdomState {
+  const seedTreatyParties = sortUniqueIds(["k_player", "k_rival_south"]);
+  const seedTreatySignedAt = Date.now() - 1000 * 60 * 60;
+  const seedTreatyExpiresAt = Date.now() + 1000 * 60 * 60 * 10;
+
   return {
     id,
     name,
@@ -110,11 +115,11 @@ function createKingdom(id: string, name: string, adjective: string, capitalRegio
     diplomacy: {
       treaties: [
         {
-          id: "treaty_seed_truce",
+          id: buildTreatyId(TreatyType.Peace, seedTreatyParties, seedTreatySignedAt),
           type: TreatyType.Peace,
-          parties: ["k_player", "k_rival_south"],
-          signedAt: Date.now() - 1000 * 60 * 60,
-          expiresAt: Date.now() + 1000 * 60 * 60 * 10,
+          parties: seedTreatyParties,
+          signedAt: seedTreatySignedAt,
+          expiresAt: seedTreatyExpiresAt,
           terms: { warReparations: 0 }
         }
       ],
@@ -305,7 +310,7 @@ export function createInitialState(): GameState {
 
   const state: GameState = {
     meta: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       sessionId: `session_${now}`,
       tick: 0,
       tickDurationMs: 3000,

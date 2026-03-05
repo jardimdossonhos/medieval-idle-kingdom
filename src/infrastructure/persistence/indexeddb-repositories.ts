@@ -1,17 +1,18 @@
 ﻿import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { GameStateRepository, SaveRepository, SaveSlotId, SaveSnapshot, SaveSummary } from "../../core/contracts/game-ports";
 import type { GameState } from "../../core/models/game-state";
-import { SAVE_SCHEMA_VERSION, isValidEnvelope, isValidGameStateShape, toSaveEnvelope, type SaveEnvelope } from "./save-schema";
+import {
+  SAVE_SCHEMA_VERSION,
+  normalizeCurrentStateEnvelope,
+  normalizeSaveEnvelope,
+  toSaveEnvelope,
+  type CurrentStateEnvelope,
+  type SaveEnvelope
+} from "./save-schema";
 
 const DB_NAME = "medieval-idle-kingdom";
 const DB_VERSION = 1;
 const CURRENT_STATE_KEY = "current";
-
-interface CurrentStateEnvelope {
-  schemaVersion: number;
-  storedAt: number;
-  state: GameState;
-}
 
 interface MedievalDbSchema extends DBSchema {
   current_state: {
@@ -30,15 +31,6 @@ function createCurrentEnvelope(state: GameState): CurrentStateEnvelope {
     storedAt: Date.now(),
     state
   };
-}
-
-function isValidCurrentEnvelope(input: unknown): input is CurrentStateEnvelope {
-  if (!input || typeof input !== "object") {
-    return false;
-  }
-
-  const envelope = input as Partial<CurrentStateEnvelope>;
-  return envelope.schemaVersion === SAVE_SCHEMA_VERSION && typeof envelope.storedAt === "number" && isValidGameStateShape(envelope.state);
 }
 
 async function openGameDb(): Promise<IDBPDatabase<MedievalDbSchema>> {
@@ -66,12 +58,18 @@ export class IndexedDbGameStateRepository implements GameStateRepository {
       return null;
     }
 
-    if (!isValidCurrentEnvelope(envelope)) {
+    const normalized = normalizeCurrentStateEnvelope(envelope);
+
+    if (!normalized) {
       await db.delete("current_state", CURRENT_STATE_KEY);
       return null;
     }
 
-    return envelope.state;
+    if (envelope.schemaVersion !== normalized.schemaVersion) {
+      await db.put("current_state", normalized, CURRENT_STATE_KEY);
+    }
+
+    return normalized.state;
   }
 
   async saveCurrent(state: GameState): Promise<void> {
@@ -102,12 +100,18 @@ export class IndexedDbSaveRepository implements SaveRepository {
       return null;
     }
 
-    if (!isValidEnvelope(envelope)) {
+    const normalized = normalizeSaveEnvelope(envelope);
+
+    if (!normalized) {
       await db.delete("save_slots", slotId);
       return null;
     }
 
-    return envelope.snapshot;
+    if (envelope.schemaVersion !== normalized.schemaVersion) {
+      await db.put("save_slots", normalized, slotId);
+    }
+
+    return normalized.snapshot;
   }
 
   async listSlots(): Promise<SaveSummary[]> {
@@ -120,11 +124,13 @@ export class IndexedDbSaveRepository implements SaveRepository {
 
     for (const key of keys) {
       const envelope = await store.get(key as SaveSlotId);
-      if (!envelope || !isValidEnvelope(envelope)) {
+      const normalized = normalizeSaveEnvelope(envelope);
+
+      if (!normalized) {
         continue;
       }
 
-      summaries.push(envelope.snapshot.summary);
+      summaries.push(normalized.snapshot.summary);
     }
 
     await transaction.done;

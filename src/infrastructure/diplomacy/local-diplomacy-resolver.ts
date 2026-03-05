@@ -1,7 +1,8 @@
 ﻿import type { DiplomacyResolver, NpcDecision } from "../../core/contracts/services";
-import { DiplomaticRelation, TreatyType } from "../../core/models/enums";
 import type { BilateralRelation, Treaty } from "../../core/models/diplomacy";
+import { DiplomaticRelation, TreatyType } from "../../core/models/enums";
 import type { GameState, KingdomState } from "../../core/models/game-state";
+import { buildTreatyId, sortUniqueIds } from "../../core/models/identifiers";
 import type { KingdomId } from "../../core/models/types";
 
 const DEFAULT_TREATY_DURATION_MS = 1000 * 60 * 18;
@@ -105,11 +106,12 @@ function registerPairTreaty(
     return;
   }
 
-  const treatyId = `treaty_${type}_${leftId}_${rightId}`;
+  const parties = sortUniqueIds([leftId, rightId]);
+  const treatyId = buildTreatyId(type, parties, now);
   const treaty: Treaty = {
     id: treatyId,
     type,
-    parties: [leftId, rightId],
+    parties,
     signedAt: now,
     expiresAt,
     terms
