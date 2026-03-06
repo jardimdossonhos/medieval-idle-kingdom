@@ -133,6 +133,7 @@ function isValidStateSnapshot(input: unknown): input is StateSnapshot {
     Number.isInteger(snapshot.commandSequence) &&
     snapshot.commandSequence >= 0 &&
     typeof snapshot.commandHash === "string" &&
+    (typeof snapshot.stateHash === "undefined" || typeof snapshot.stateHash === "string") &&
     isValidGameStateShape(snapshot.state)
   );
 }
@@ -400,7 +401,8 @@ export class IndexedDbSnapshotRepository implements SnapshotRepository {
         savedAt: snapshot.savedAt,
         reason: snapshot.reason,
         commandSequence: snapshot.commandSequence,
-        commandHash: snapshot.commandHash
+        commandHash: snapshot.commandHash,
+        stateHash: snapshot.stateHash
       });
     }
 

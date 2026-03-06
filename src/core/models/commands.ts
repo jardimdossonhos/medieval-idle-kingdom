@@ -25,6 +25,7 @@ export interface StateSnapshot {
   reason: SnapshotReason;
   commandSequence: number;
   commandHash: string;
+  stateHash?: string;
   state: GameState;
 }
 
@@ -35,4 +36,5 @@ export interface SnapshotSummary {
   reason: SnapshotReason;
   commandSequence: number;
   commandHash: string;
+  stateHash?: string;
 }

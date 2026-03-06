@@ -122,7 +122,8 @@ class InMemorySnapshotRepository implements SnapshotRepository {
         savedAt: snapshot.savedAt,
         reason: snapshot.reason,
         commandSequence: snapshot.commandSequence,
-        commandHash: snapshot.commandHash
+        commandHash: snapshot.commandHash,
+        stateHash: snapshot.stateHash
       }));
   }
 
@@ -232,5 +233,6 @@ describe("GameSession command log and snapshots", () => {
     expect(snapshots.length).toBeGreaterThan(0);
     expect(snapshots.some((snapshot) => snapshot.reason === "periodic")).toBe(true);
     expect(snapshots[0].commandSequence).toBeGreaterThan(0);
+    expect(typeof snapshots[0].stateHash).toBe("string");
   });
 });

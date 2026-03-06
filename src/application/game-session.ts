@@ -16,6 +16,7 @@ import type { CommandLogEntry, SnapshotReason, StateSnapshot } from "../core/mod
 import type { DomainEvent, EventLogEntry } from "../core/models/events";
 import type { GameState } from "../core/models/game-state";
 import { buildTreatyId, sortUniqueIds } from "../core/models/identifiers";
+import { buildStateHash } from "../core/utils/state-fingerprint";
 import { hashDeterministic } from "../core/utils/stable-hash";
 import { TickPipeline, type SimulationSystem } from "../core/simulation/tick-pipeline";
 import { createAutoSlotId, MANUAL_SLOT_ID, nextAutoSlot, SAFETY_SLOT_ID } from "../infrastructure/persistence/save-slots";
@@ -854,6 +855,7 @@ export class GameSession {
       reason,
       commandSequence: this.commandSequence,
       commandHash: this.commandHeadHash,
+      stateHash: buildStateHash(state),
       state: structuredClone(state)
     };
   }
@@ -1092,6 +1094,8 @@ export class GameSession {
       return;
     }
 
+    const state = this.currentState;
+    const stateHash = state ? buildStateHash(state) : null;
     const entries: CommandLogEntry[] = [];
 
     entries.push(
@@ -1103,7 +1107,8 @@ export class GameSession {
         payload: {
           previousTick,
           currentTick,
-          eventCount: events.length
+          eventCount: events.length,
+          stateHash
         },
         createdAt
       })

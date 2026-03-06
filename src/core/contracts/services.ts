@@ -1,6 +1,7 @@
-﻿import type { GameState, KingdomState, WarState } from "../models/game-state";
+﻿import type { CommandLogEntry, SnapshotSummary, StateSnapshot } from "../models/commands";
+import type { GameState, KingdomState, WarState } from "../models/game-state";
 import type { DomainEvent } from "../models/events";
-import type { KingdomId, TickId, TimestampMs } from "../models/types";
+import type { KingdomId, TimestampMs } from "../models/types";
 
 export interface NpcDecision {
   actorKingdomId: KingdomId;
@@ -27,17 +28,30 @@ export interface WarResolver {
   enforcePeace(state: GameState, warId: string): GameState;
 }
 
-export interface SyncEnvelope {
-  revision: number;
-  producedAt: TimestampMs;
-  tick: TickId;
-  payload: unknown;
+export interface SyncPullRequest {
+  fromSequence: number;
+  limit?: number;
+}
+
+export interface SyncPullResponse {
+  entries: CommandLogEntry[];
+  latestSequence: number;
+  latestHash: string;
+}
+
+export interface SyncSyncResult {
+  acceptedCommands: number;
+  latestSequence: number;
+  latestHash: string;
 }
 
 export interface SyncAdapter {
-  push(state: GameState): Promise<void>;
-  pull(): Promise<SyncEnvelope | null>;
-  merge(localState: GameState, remoteEnvelope: SyncEnvelope): Promise<GameState>;
+  pushCommands(entries: CommandLogEntry[]): Promise<SyncSyncResult>;
+  pullCommands(request: SyncPullRequest): Promise<SyncPullResponse>;
+  pushSnapshot(snapshot: StateSnapshot): Promise<void>;
+  pullLatestSnapshot(): Promise<StateSnapshot | null>;
+  pullSnapshotSummaries(limit?: number): Promise<SnapshotSummary[]>;
+  merge(localState: GameState, remoteSnapshot: StateSnapshot | null, remoteEntries: CommandLogEntry[]): Promise<GameState>;
 }
 
 export interface EventBus {
