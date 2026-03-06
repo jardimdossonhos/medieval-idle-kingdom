@@ -7,6 +7,7 @@ export function createVictorySystem(): SimulationSystem {
     id: "victory",
     run(context): void {
       const state = context.nextState;
+      let eventSeq = 0;
       const player = getPlayerKingdom(state);
       const totalRegions = Math.max(1, Object.keys(state.world.regions).length);
       const playerTerritory = getOwnedRegionIds(state, player.id).length;
@@ -23,7 +24,13 @@ export function createVictorySystem(): SimulationSystem {
           state.victory.postVictoryMode = true;
 
           context.events.push({
-            id: createEventId("evt_victory", state.meta.tick, context.events.length),
+            id: createEventId({
+              prefix: "evt_victory",
+              tick: state.meta.tick,
+              systemId: "victory",
+              actorId: player.id,
+              sequence: eventSeq++
+            }),
             type: "victory.achieved",
             actorKingdomId: player.id,
             payload: {

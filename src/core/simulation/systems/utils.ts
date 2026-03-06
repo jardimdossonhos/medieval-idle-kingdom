@@ -38,6 +38,21 @@ export function ensureResourceNonNegative(kingdom: KingdomState): void {
   }
 }
 
-export function createEventId(prefix: string, tick: number, sequence: number): string {
-  return `${prefix}_${tick}_${sequence}`;
+export interface EventIdInput {
+  prefix: string;
+  tick: number;
+  systemId: string;
+  actorId?: string;
+  sequence: number;
+}
+
+function sanitizeEventIdPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+export function createEventId(input: EventIdInput): string {
+  const actorId = sanitizeEventIdPart(input.actorId ?? "none");
+  const systemId = sanitizeEventIdPart(input.systemId);
+  const sequence = Math.max(0, Math.trunc(input.sequence));
+  return `${input.prefix}_${Math.trunc(input.tick)}_${systemId}_${actorId}_${sequence}`;
 }

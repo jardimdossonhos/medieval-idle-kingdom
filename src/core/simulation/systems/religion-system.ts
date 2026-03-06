@@ -7,8 +7,10 @@ export function createReligionSystem(): SimulationSystem {
     id: "religion",
     run(context): void {
       const state = context.nextState;
+      let eventSeq = 0;
 
-      for (const kingdom of Object.values(state.kingdoms)) {
+      for (const kingdomId of Object.keys(state.kingdoms).sort()) {
+        const kingdom = state.kingdoms[kingdomId];
         const ownedRegions = getOwnedRegionIds(state, kingdom.id);
         const regionalFaithAverage =
           ownedRegions.length === 0
@@ -78,7 +80,13 @@ export function createReligionSystem(): SimulationSystem {
 
         if (tensionIndex > 0.55 && state.meta.tick % 6 === 0) {
           context.events.push({
-            id: createEventId("evt_religion", state.meta.tick, context.events.length),
+            id: createEventId({
+              prefix: "evt_religion",
+              tick: state.meta.tick,
+              systemId: "religion",
+              actorId: kingdom.id,
+              sequence: eventSeq++
+            }),
             type: "religion.tension",
             actorKingdomId: kingdom.id,
             payload: {

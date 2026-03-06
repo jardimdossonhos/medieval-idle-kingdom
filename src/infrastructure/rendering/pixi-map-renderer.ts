@@ -1,5 +1,6 @@
 ﻿import { Application, Container, Graphics, Text } from "pixi.js";
 import type { KingdomState } from "../../core/models/game-state";
+import type { StaticWorldData } from "../../core/models/static-world-data";
 import type { RegionDefinition, WorldState } from "../../core/models/world";
 import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 
@@ -21,6 +22,7 @@ export class PixiMapRenderer implements GameMapRenderer {
 
   constructor(
     private readonly container: HTMLElement,
+    private readonly staticData: StaticWorldData,
     private readonly onRegionSelect?: (selection: MapSelection) => void
   ) {}
 
@@ -110,7 +112,12 @@ export class PixiMapRenderer implements GameMapRenderer {
     this.layerContainer.removeChildren();
     this.regionNodes.clear();
 
-    for (const region of Object.values(world.definitions)) {
+    for (const regionId of Object.keys(world.regions).sort()) {
+      const region = this.staticData.definitions[regionId];
+      if (!region) {
+        continue;
+      }
+
       const shape = new Graphics();
       shape.eventMode = "static";
       shape.cursor = "pointer";

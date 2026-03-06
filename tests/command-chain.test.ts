@@ -21,9 +21,20 @@ function createEntry(
     previousHash
   };
 
+  const hashMaterial = {
+    sequence,
+    id: base.id,
+    issuerType: base.issuerType,
+    issuerId: base.issuerId,
+    tick: base.tick,
+    commandType: base.commandType,
+    payload: base.payload,
+    previousHash: base.previousHash
+  };
+
   return {
     ...base,
-    hash: hashDeterministic(base)
+    hash: hashDeterministic(hashMaterial)
   };
 }
 

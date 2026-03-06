@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 import { createInitialState } from "../src/application/boot/create-initial-state";
+import { createStaticWorldData } from "../src/application/boot/static-world-data";
 import { GameSession } from "../src/application/game-session";
 import type {
   CommandLogRepository,
@@ -140,11 +141,13 @@ class InMemoryEventBus implements EventBus {
 
 describe("GameSession player actions", () => {
   it("applies regional action and decreases unrest", async () => {
-    const initial = createInitialState();
+    const staticData = createStaticWorldData();
+    const initial = createInitialState(staticData);
 
     const session = new GameSession({
       gameStateRepository: new InMemoryGameStateRepository(),
       saveRepository: new InMemorySaveRepository(),
+      staticWorldData: staticData,
       commandLogRepository: new NoopCommandLogRepository(),
       snapshotRepository: new NoopSnapshotRepository(),
       clock: new FakeClock(initial.meta.createdAt + 1_000),
@@ -163,11 +166,13 @@ describe("GameSession player actions", () => {
   });
 
   it("applies diplomacy cooldown on repeated action", async () => {
-    const initial = createInitialState();
+    const staticData = createStaticWorldData();
+    const initial = createInitialState(staticData);
 
     const session = new GameSession({
       gameStateRepository: new InMemoryGameStateRepository(),
       saveRepository: new InMemorySaveRepository(),
+      staticWorldData: staticData,
       commandLogRepository: new NoopCommandLogRepository(),
       snapshotRepository: new NoopSnapshotRepository(),
       clock: new FakeClock(initial.meta.createdAt + 2_000),
@@ -186,11 +191,13 @@ describe("GameSession player actions", () => {
   });
 
   it("lists technology choices and allows targeting available research", async () => {
-    const initial = createInitialState();
+    const staticData = createStaticWorldData();
+    const initial = createInitialState(staticData);
 
     const session = new GameSession({
       gameStateRepository: new InMemoryGameStateRepository(),
       saveRepository: new InMemorySaveRepository(),
+      staticWorldData: staticData,
       commandLogRepository: new NoopCommandLogRepository(),
       snapshotRepository: new NoopSnapshotRepository(),
       clock: new FakeClock(initial.meta.createdAt + 3_000),

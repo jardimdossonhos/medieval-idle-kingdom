@@ -6,7 +6,10 @@ export function createPopulationSystem(): SimulationSystem {
   return {
     id: "population",
     run(context): void {
-      for (const kingdom of Object.values(context.nextState.kingdoms)) {
+      let eventSeq = 0;
+
+      for (const kingdomId of Object.keys(context.nextState.kingdoms).sort()) {
+        const kingdom = context.nextState.kingdoms[kingdomId];
         const foodStock = kingdom.economy.stock[ResourceType.Food];
         const requiredFood = kingdom.population.total / 7_000;
         const foodPressure = requiredFood <= 0 ? 0 : clamp((requiredFood - foodStock) / requiredFood, 0, 1);
@@ -31,7 +34,13 @@ export function createPopulationSystem(): SimulationSystem {
 
         if (kingdom.population.unrest > 0.75 && context.nextState.meta.tick % 7 === 0) {
           context.events.push({
-            id: createEventId("evt_unrest", context.nextState.meta.tick, context.events.length),
+            id: createEventId({
+              prefix: "evt_unrest",
+              tick: context.nextState.meta.tick,
+              systemId: "population",
+              actorId: kingdom.id,
+              sequence: eventSeq++
+            }),
             type: "population.unrest_warning",
             actorKingdomId: kingdom.id,
             payload: {

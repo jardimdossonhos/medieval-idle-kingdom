@@ -28,7 +28,6 @@ function expectedEntryHash(entry: CommandLogEntry): string {
     tick: entry.tick,
     commandType: entry.commandType,
     payload: entry.payload,
-    createdAt: entry.createdAt,
     previousHash: entry.previousHash
   });
 }

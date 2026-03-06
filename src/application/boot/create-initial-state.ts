@@ -15,8 +15,9 @@ import type { GameState, KingdomState } from "../../core/models/game-state";
 import { buildTreatyId, sortUniqueIds } from "../../core/models/identifiers";
 import type { NpcBehaviorState } from "../../core/models/npc";
 import type { PopulationState } from "../../core/models/population";
-import type { RegionDefinition, RegionState, StrategicRoute, WorldState } from "../../core/models/world";
-import { WORLD_DEFINITIONS_MAP_ID, WORLD_DEFINITIONS_V1 } from "./generated/world-definitions-v1";
+import type { StaticWorldData } from "../../core/models/static-world-data";
+import type { RegionDefinition, RegionState, WorldState } from "../../core/models/world";
+import { createStaticWorldData } from "./static-world-data";
 
 interface KingdomBlueprint {
   id: string;
@@ -392,8 +393,10 @@ function toDefinitionMap(definitions: RegionDefinition[]): Record<string, Region
   return Object.fromEntries(definitions.map((definition) => [definition.id, definition]));
 }
 
-function listDefinitionsSorted(): RegionDefinition[] {
-  return [...WORLD_DEFINITIONS_V1].sort((left, right) => left.id.localeCompare(right.id));
+function listDefinitionsSorted(staticData: StaticWorldData): RegionDefinition[] {
+  return Object.keys(staticData.definitions)
+    .sort()
+    .map((regionId) => staticData.definitions[regionId]);
 }
 
 function assignRegionOwners(definitions: RegionDefinition[], kingdomIds: string[]): Record<string, string> {
@@ -508,37 +511,8 @@ function createRegionState(definition: RegionDefinition, ownerId: string): Regio
   };
 }
 
-function createWorldRoutes(definitionsById: Record<string, RegionDefinition>): StrategicRoute[] {
-  const routes: StrategicRoute[] = [];
-
-  for (const definition of Object.keys(definitionsById)
-    .sort()
-    .map((regionId) => definitionsById[regionId])) {
-    for (const neighborId of [...definition.neighbors].sort()) {
-      if (definition.id.localeCompare(neighborId) >= 0) {
-        continue;
-      }
-
-      const neighbor = definitionsById[neighborId];
-      if (!neighbor) {
-        continue;
-      }
-
-      routes.push({
-        id: `route_${definition.id}_${neighborId}`,
-        from: definition.id,
-        to: neighborId,
-        routeType: definition.isCoastal && neighbor.isCoastal ? "sea" : "land",
-        controlWeight: round(0.8 + ((definition.strategicValue + neighbor.strategicValue) / 20), 2)
-      });
-    }
-  }
-
-  return routes;
-}
-
-function createWorldState(ownerByRegionId: Record<string, string>): WorldState {
-  const definitions = toDefinitionMap(listDefinitionsSorted());
+function createWorldState(ownerByRegionId: Record<string, string>, staticData: StaticWorldData): WorldState {
+  const definitions = toDefinitionMap(listDefinitionsSorted(staticData));
   const regions: Record<string, RegionState> = {};
 
   for (const regionId of Object.keys(definitions).sort()) {
@@ -548,10 +522,8 @@ function createWorldState(ownerByRegionId: Record<string, string>): WorldState {
   }
 
   return {
-    mapId: WORLD_DEFINITIONS_MAP_ID,
-    definitions,
-    regions,
-    routes: createWorldRoutes(definitions)
+    mapId: staticData.mapId,
+    regions
   };
 }
 
@@ -614,8 +586,8 @@ function createSeedTreaty(state: GameState, now: number): void {
   south.diplomacy.treaties.push(treaty);
 }
 
-function createKingdoms(ownerByRegionId: Record<string, string>): Record<string, KingdomState> {
-  const definitionsById = toDefinitionMap(listDefinitionsSorted());
+function createKingdoms(ownerByRegionId: Record<string, string>, staticData: StaticWorldData): Record<string, KingdomState> {
+  const definitionsById = toDefinitionMap(listDefinitionsSorted(staticData));
   const byOwner = buildOwnerIndex(ownerByRegionId);
   const kingdoms: Record<string, KingdomState> = {};
 
@@ -628,15 +600,15 @@ function createKingdoms(ownerByRegionId: Record<string, string>): Record<string,
   return kingdoms;
 }
 
-export function createInitialState(): GameState {
+export function createInitialState(staticData: StaticWorldData = createStaticWorldData()): GameState {
   const now = Date.now();
-  const definitions = listDefinitionsSorted();
+  const definitions = listDefinitionsSorted(staticData);
   const kingdomIds = KINGDOM_BLUEPRINTS.map((entry) => entry.id).sort();
   const ownerByRegionId = assignRegionOwners(definitions, kingdomIds);
 
   const state: GameState = {
     meta: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       sessionId: `session_${now}`,
       tick: 0,
       tickDurationMs: 3_000,
@@ -649,7 +621,7 @@ export function createInitialState(): GameState {
     campaign: {
       id: "campaign_world_thrones",
       name: "Coroas do Mundo",
-      mapId: WORLD_DEFINITIONS_MAP_ID,
+      mapId: staticData.mapId,
       startDateIso: "1100-01-01",
       victoryTargets: [
         { path: VictoryPath.TerritorialDomination, threshold: 0.55 },
@@ -659,8 +631,8 @@ export function createInitialState(): GameState {
         { path: VictoryPath.DynasticLegacy, threshold: 0.72 }
       ]
     },
-    world: createWorldState(ownerByRegionId),
-    kingdoms: createKingdoms(ownerByRegionId),
+    world: createWorldState(ownerByRegionId, staticData),
+    kingdoms: createKingdoms(ownerByRegionId, staticData),
     wars: {},
     events: [
       {

@@ -79,6 +79,7 @@ export function createNpcDecisionSystem(
     id: "npc_decision",
     run(context): void {
       const state = context.nextState;
+      let eventSeq = 0;
 
       for (const kingdomId of Object.keys(state.kingdoms).sort()) {
         const kingdom = state.kingdoms[kingdomId];
@@ -103,17 +104,25 @@ export function createNpcDecisionSystem(
               warRisk = warResolver.evaluateWarRisk(attacker, defender, context.nextState);
 
               if (warRisk >= 0.52) {
-                const beforeWarIds = new Set(Object.keys(context.nextState.wars));
+                const beforeWarIds = new Set(Object.keys(context.nextState.wars).sort());
                 context.nextState = warResolver.declareWar(context.nextState, attacker.id, defender.id);
 
-                const warsAfter = Object.values(context.nextState.wars) as WarState[];
+                const warsAfter = Object.keys(context.nextState.wars)
+                  .sort()
+                  .map((warId) => context.nextState.wars[warId]) as WarState[];
                 const newWar = warsAfter.find((war) => !beforeWarIds.has(war.id));
 
                 if (newWar) {
                   decisionResult = "war_declared";
 
                   context.events.push({
-                    id: createEventId("evt_war_start", context.nextState.meta.tick, context.events.length),
+                    id: createEventId({
+                      prefix: "evt_war_start",
+                      tick: context.nextState.meta.tick,
+                      systemId: "npc_decision",
+                      actorId: attacker.id,
+                      sequence: eventSeq++
+                    }),
                     type: "war.started",
                     actorKingdomId: attacker.id,
                     targetKingdomId: defender.id,
@@ -132,14 +141,26 @@ export function createNpcDecisionSystem(
           }
 
           if (decision.targetKingdomId && decision.actionType === "proposta_paz") {
-            const activeWar = findWarBetween(Object.values(context.nextState.wars) as WarState[], decision.actorKingdomId, decision.targetKingdomId);
+            const activeWar = findWarBetween(
+              Object.keys(context.nextState.wars)
+                .sort()
+                .map((warId) => context.nextState.wars[warId]) as WarState[],
+              decision.actorKingdomId,
+              decision.targetKingdomId
+            );
 
             if (activeWar) {
               context.nextState = warResolver.enforcePeace(context.nextState, activeWar.id);
               decisionResult = "peace_accepted";
 
               context.events.push({
-                id: createEventId("evt_war_peace", context.nextState.meta.tick, context.events.length),
+                id: createEventId({
+                  prefix: "evt_war_peace",
+                  tick: context.nextState.meta.tick,
+                  systemId: "npc_decision",
+                  actorId: decision.actorKingdomId,
+                  sequence: eventSeq++
+                }),
                 type: "war.peace",
                 actorKingdomId: decision.actorKingdomId,
                 targetKingdomId: decision.targetKingdomId,
@@ -160,7 +181,13 @@ export function createNpcDecisionSystem(
           kingdom.npc.lastDecisionTick = context.nextState.meta.tick;
 
           context.events.push({
-            id: createEventId("evt_npc", context.nextState.meta.tick, context.events.length),
+            id: createEventId({
+              prefix: "evt_npc",
+              tick: context.nextState.meta.tick,
+              systemId: "npc_decision",
+              actorId: decision.actorKingdomId,
+              sequence: eventSeq++
+            }),
             type: "npc.decision",
             actorKingdomId: decision.actorKingdomId,
             targetKingdomId: decision.targetKingdomId,

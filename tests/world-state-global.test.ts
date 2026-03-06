@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createInitialState } from "../src/application/boot/create-initial-state";
+import { createStaticWorldData } from "../src/application/boot/static-world-data";
 
 describe("world state global bootstrap", () => {
-  it("initializes all world regions with owners and definitions", () => {
-    const state = createInitialState();
+  it("initializes all world regions with owners and static definitions", () => {
+    const staticData = createStaticWorldData();
+    const state = createInitialState(staticData);
     const regionIds = Object.keys(state.world.regions).sort();
-    const definitionIds = Object.keys(state.world.definitions).sort();
+    const definitionIds = Object.keys(staticData.definitions).sort();
 
     expect(regionIds.length).toBeGreaterThanOrEqual(200);
     expect(regionIds.length).toBe(definitionIds.length);

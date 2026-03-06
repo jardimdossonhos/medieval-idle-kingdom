@@ -121,6 +121,20 @@ p {
   margin-left: auto;
 }
 
+.dev-overlay {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  width: min(340px, calc(100vw - 28px));
+  z-index: 12;
+  opacity: 0.94;
+}
+
+.dev-overlay h3 {
+  margin: 0 0 6px;
+  color: var(--accent);
+}
+
 .map-workspace {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(320px, 1fr);

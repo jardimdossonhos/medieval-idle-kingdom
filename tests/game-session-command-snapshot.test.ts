@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 import { createInitialState } from "../src/application/boot/create-initial-state";
+import { createStaticWorldData } from "../src/application/boot/static-world-data";
 import { GameSession } from "../src/application/game-session";
 import type {
   CommandLogRepository,
@@ -185,7 +186,8 @@ class InMemoryEventBus implements EventBus {
 
 describe("GameSession command log and snapshots", () => {
   it("records command chain and periodic snapshots", async () => {
-    const initialState = createInitialState();
+    const staticData = createStaticWorldData();
+    const initialState = createInitialState(staticData);
     const gameStateRepository = new InMemoryGameStateRepository();
     const saveRepository = new InMemorySaveRepository();
     const commandRepository = new InMemoryCommandLogRepository();
@@ -195,6 +197,7 @@ describe("GameSession command log and snapshots", () => {
     const session = new GameSession({
       gameStateRepository,
       saveRepository,
+      staticWorldData: staticData,
       commandLogRepository: commandRepository,
       snapshotRepository,
       clock,

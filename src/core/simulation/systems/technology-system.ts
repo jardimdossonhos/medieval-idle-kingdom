@@ -108,6 +108,8 @@ export function createTechnologySystem(): SimulationSystem {
   return {
     id: "technology",
     run(context): void {
+      let eventSeq = 0;
+
       for (const kingdomId of Object.keys(context.nextState.kingdoms).sort()) {
         const kingdom = context.nextState.kingdoms[kingdomId];
         const budgetTechFactor = kingdom.economy.budgetPriority.technology / 20;
@@ -136,7 +138,13 @@ export function createTechnologySystem(): SimulationSystem {
         kingdom.technology.activeResearchId = next?.id ?? null;
 
         context.events.push({
-          id: createEventId("evt_research", context.nextState.meta.tick, context.events.length),
+          id: createEventId({
+            prefix: "evt_research",
+            tick: context.nextState.meta.tick,
+            systemId: "technology",
+            actorId: kingdom.id,
+            sequence: eventSeq++
+          }),
           type: "technology.completed",
           actorKingdomId: kingdom.id,
           payload: {

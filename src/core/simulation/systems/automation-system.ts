@@ -70,12 +70,16 @@ function selectResearchDomain(kingdom: KingdomState, threat: number, warCount: n
   return TechnologyDomain.Logistics;
 }
 
-function selectExpansionTargets(state: GameState, kingdomId: string): string[] {
+function selectExpansionTargets(
+  state: GameState,
+  kingdomId: string,
+  definitions: Record<string, { neighbors: string[]; strategicValue: number }>
+): string[] {
   const ownedRegions = getOwnedRegionIds(state, kingdomId);
   const candidates: string[] = [];
 
   for (const regionId of ownedRegions) {
-    const definition = state.world.definitions[regionId];
+    const definition = definitions[regionId];
 
     if (!definition) {
       continue;
@@ -92,9 +96,7 @@ function selectExpansionTargets(state: GameState, kingdomId: string): string[] {
     }
   }
 
-  return candidates
-    .sort((leftId, rightId) => (state.world.definitions[rightId]?.strategicValue ?? 0) - (state.world.definitions[leftId]?.strategicValue ?? 0))
-    .slice(0, 2);
+  return candidates.sort().slice(0, 2);
 }
 
 export function createAutomationSystem(): SimulationSystem {
@@ -102,6 +104,7 @@ export function createAutomationSystem(): SimulationSystem {
     id: "automation",
     run(context): void {
       const state = context.nextState;
+      const definitions = context.staticData.definitions;
 
       for (const kingdomId of Object.keys(state.kingdoms).sort()) {
         const kingdom = state.kingdoms[kingdomId];
@@ -167,7 +170,9 @@ export function createAutomationSystem(): SimulationSystem {
           if (warCount === 0 && threat < 0.52 && kingdom.stability > 52 && kingdom.economy.stock.gold > 120) {
             kingdom.military.posture = ArmyPosture.Aggressive;
             kingdom.military.offensiveFocus = roundTo(clamp(kingdom.military.offensiveFocus + 0.02, 0.3, 0.95));
-            kingdom.military.targetRegionIds = selectExpansionTargets(state, kingdom.id);
+            kingdom.military.targetRegionIds = selectExpansionTargets(state, kingdom.id, definitions)
+              .sort((leftId, rightId) => (definitions[rightId]?.strategicValue ?? 0) - (definitions[leftId]?.strategicValue ?? 0))
+              .slice(0, 2);
           } else if (warCount > 0 || threat > 0.72) {
             kingdom.military.targetRegionIds = [];
           }

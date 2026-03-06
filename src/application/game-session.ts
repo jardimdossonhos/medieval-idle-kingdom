@@ -16,6 +16,7 @@ import type { CommandLogEntry, SnapshotReason, StateSnapshot } from "../core/mod
 import type { DomainEvent, EventLogEntry } from "../core/models/events";
 import type { GameState } from "../core/models/game-state";
 import { buildTreatyId, sortUniqueIds } from "../core/models/identifiers";
+import type { StaticWorldData } from "../core/models/static-world-data";
 import { buildStateHash } from "../core/utils/state-fingerprint";
 import { hashDeterministic } from "../core/utils/stable-hash";
 import { TickPipeline, type SimulationSystem } from "../core/simulation/tick-pipeline";
@@ -24,6 +25,7 @@ import { createAutoSlotId, MANUAL_SLOT_ID, nextAutoSlot, SAFETY_SLOT_ID } from "
 export interface GameSessionDeps {
   gameStateRepository: GameStateRepository;
   saveRepository: SaveRepository;
+  staticWorldData: StaticWorldData;
   clock: ClockService;
   eventBus: EventBus;
   systems: SimulationSystem[];
@@ -60,6 +62,13 @@ export interface TechnologyChoice {
   isGoal: boolean;
 }
 
+export interface RuntimeMetrics {
+  tickMsLast: number;
+  tickMsAverage: number;
+  offlineCatchUpMs: number;
+  offlineTicks: number;
+}
+
 export class GameSession {
   private readonly pipeline: TickPipeline;
   private readonly listeners = new Set<StateListener>();
@@ -72,9 +81,16 @@ export class GameSession {
   private sessionLogSeq = 0;
   private commandSequence = 0;
   private commandHeadHash = "genesis";
+  private tickSamples: number[] = [];
+  private runtimeMetrics: RuntimeMetrics = {
+    tickMsLast: 0,
+    tickMsAverage: 0,
+    offlineCatchUpMs: 0,
+    offlineTicks: 0
+  };
 
   constructor(private readonly deps: GameSessionDeps) {
-    this.pipeline = new TickPipeline(deps.systems);
+    this.pipeline = new TickPipeline(deps.systems, deps.staticWorldData);
   }
 
   async bootstrap(initialState: GameState): Promise<GameState> {
@@ -89,6 +105,8 @@ export class GameSession {
     this.currentState = offlineResult.state;
     this.currentState.meta.lastClosedAt = null;
     this.currentState.meta.lastUpdatedAt = now;
+    this.runtimeMetrics.offlineCatchUpMs = this.round(offlineResult.elapsedMs, 3);
+    this.runtimeMetrics.offlineTicks = offlineResult.ticks;
 
     if (offlineResult.ticks > 0) {
       this.currentState.events = [
@@ -468,7 +486,7 @@ export class GameSession {
     const now = this.deps.clock.now();
     const player = this.getPlayerKingdom(state);
     const region = state.world.regions[regionId];
-    const regionDef = state.world.definitions[regionId];
+    const regionDef = this.deps.staticWorldData.definitions[regionId];
 
     if (!region || !regionDef) {
       return { ok: false, message: "Região inválida." };
@@ -579,6 +597,14 @@ export class GameSession {
     return this.requireState();
   }
 
+  getStaticWorldData(): StaticWorldData {
+    return this.deps.staticWorldData;
+  }
+
+  getRuntimeMetrics(): RuntimeMetrics {
+    return { ...this.runtimeMetrics };
+  }
+
   async flushPersistence(): Promise<void> {
     await this.ioQueue;
   }
@@ -603,6 +629,28 @@ export class GameSession {
   private round(value: number, decimals = 2): number {
     const factor = 10 ** decimals;
     return Math.round(value * factor) / factor;
+  }
+
+  private monotonicNow(): number {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return performance.now();
+    }
+
+    return Date.now();
+  }
+
+  private registerTickTiming(elapsedMs: number): void {
+    this.tickSamples.push(elapsedMs);
+
+    if (this.tickSamples.length > 60) {
+      this.tickSamples.shift();
+    }
+
+    const total = this.tickSamples.reduce((sum, value) => sum + value, 0);
+    const average = this.tickSamples.length === 0 ? 0 : total / this.tickSamples.length;
+
+    this.runtimeMetrics.tickMsLast = this.round(elapsedMs, 3);
+    this.runtimeMetrics.tickMsAverage = this.round(average, 3);
   }
 
   private nextRandom(state: GameState): number {
@@ -843,7 +891,10 @@ export class GameSession {
       simNow = Math.max(simNow, current.meta.lastUpdatedAt) + tickDurationMs;
 
       const previousTick = current.meta.tick;
+      const tickStartedAt = this.monotonicNow();
       const result = this.pipeline.run(current, tickDurationMs, simNow);
+      const tickElapsedMs = this.monotonicNow() - tickStartedAt;
+      this.registerTickTiming(tickElapsedMs);
       this.currentState = result.state;
       progressed = true;
       this.ticksSinceAutosave += 1;
@@ -1008,28 +1059,35 @@ export class GameSession {
     this.commandHeadHash = latest.hash;
   }
 
-  private runOfflineProgression(state: GameState, now: number): { state: GameState; ticks: number } {
+  private runOfflineProgression(state: GameState, now: number): { state: GameState; ticks: number; elapsedMs: number } {
     const lastSnapshotAt = state.meta.lastClosedAt ?? state.meta.lastUpdatedAt;
     if (!lastSnapshotAt || lastSnapshotAt >= now) {
-      return { state, ticks: 0 };
+      return { state, ticks: 0, elapsedMs: 0 };
     }
 
     const elapsedMs = now - lastSnapshotAt;
-    const maxTicks = this.deps.maxOfflineTicks ?? 1_200;
+    const maxTicks = this.deps.maxOfflineTicks ?? 12_000;
     const desiredTicks = Math.floor(elapsedMs / Math.max(1, state.meta.tickDurationMs));
     const ticksToSimulate = Math.max(0, Math.min(desiredTicks, maxTicks));
 
-    let workingState = structuredClone(state);
-
-    for (let index = 0; index < ticksToSimulate; index += 1) {
-      const tickNow = lastSnapshotAt + (index + 1) * workingState.meta.tickDurationMs;
-      const result = this.pipeline.run(workingState, workingState.meta.tickDurationMs, tickNow);
-      workingState = result.state;
+    if (ticksToSimulate === 0) {
+      return {
+        state,
+        ticks: 0,
+        elapsedMs: 0
+      };
     }
 
+    const tickDurationMs = Math.max(1, state.meta.tickDurationMs);
+    const startedAt = this.monotonicNow();
+    const batchResult = this.pipeline.runBatch(state, ticksToSimulate, tickDurationMs, lastSnapshotAt, {
+      collectEvents: false
+    });
+
     return {
-      state: workingState,
-      ticks: ticksToSimulate
+      state: batchResult.state,
+      ticks: ticksToSimulate,
+      elapsedMs: this.monotonicNow() - startedAt
     };
   }
 
@@ -1079,8 +1137,16 @@ export class GameSession {
       createdAt: input.createdAt,
       previousHash
     };
-
-    const hash = hashDeterministic(base);
+    const hash = hashDeterministic({
+      sequence,
+      id,
+      issuerType: input.issuerType,
+      issuerId: input.issuerId,
+      tick: input.tick,
+      commandType: input.commandType,
+      payload: input.payload,
+      previousHash
+    });
 
     this.commandSequence = sequence;
     this.commandHeadHash = hash;

@@ -1,15 +1,18 @@
 ﻿import { describe, expect, it } from "vitest";
 import { createInitialState } from "../src/application/boot/create-initial-state";
+import { createStaticWorldData } from "../src/application/boot/static-world-data";
 import { ArmyPosture } from "../src/core/models/enums";
 import type { TickContext } from "../src/core/simulation/tick-pipeline";
 import { createAutomationSystem } from "../src/core/simulation/systems/automation-system";
 
 function createContext(): TickContext {
-  const state = createInitialState();
+  const staticData = createStaticWorldData();
+  const state = createInitialState(staticData);
 
   return {
     previousState: state,
     nextState: structuredClone(state),
+    staticData,
     deltaMs: state.meta.tickDurationMs,
     now: state.meta.lastUpdatedAt,
     events: []

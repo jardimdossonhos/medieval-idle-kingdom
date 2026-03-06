@@ -50,6 +50,8 @@ function targetWeight(targetIsPlayer: boolean): number {
   return targetIsPlayer ? 0.06 : 0.02;
 }
 
+const WAR_COOLDOWN_KEY = "war:declaration";
+
 export class RuleBasedNpcDecisionService implements INpcDecisionService {
   decide(state: GameState, actorKingdomId: string): NpcDecision[] {
     const actor = state.kingdoms[actorKingdomId];
@@ -58,12 +60,13 @@ export class RuleBasedNpcDecisionService implements INpcDecisionService {
       return [];
     }
 
-    if (state.meta.tick % 4 !== 0) {
+    if (state.meta.tick % 3 !== 0) {
       return [];
     }
 
     const actorStrength = Math.max(1, armyStrengthFor(state, actor.id));
     const actorWarCount = activeWarCount(state, actor.id);
+    const coalitionPressure = actor.diplomacy.coalitionThreat;
     const potentialTargets = Object.keys(state.kingdoms)
       .sort()
       .map((kingdomId) => state.kingdoms[kingdomId])
@@ -82,6 +85,7 @@ export class RuleBasedNpcDecisionService implements INpcDecisionService {
       const targetStrength = Math.max(1, armyStrengthFor(state, target.id));
       const strengthRatio = actorStrength / targetStrength;
       const memoryHostility = hostilityFromMemory(state, actor.id, target.id);
+      const warCooldownUntil = relation.actionCooldowns?.[WAR_COOLDOWN_KEY] ?? 0;
 
       if (atWar) {
         const peacePriority = clamp(
@@ -114,7 +118,8 @@ export class RuleBasedNpcDecisionService implements INpcDecisionService {
         relation.grievance * 0.24 +
         memoryHostility * 0.16 +
         actor.npc.personality.ambition * 0.14 +
-        (1 - relation.score.trust) * 0.12;
+        (1 - relation.score.trust) * 0.12 -
+        coalitionPressure * 0.1;
 
       const allianceIndex =
         relation.score.trust * 0.46 +
@@ -124,11 +129,12 @@ export class RuleBasedNpcDecisionService implements INpcDecisionService {
 
       const canOpenWar =
         !alreadyOpenedWar &&
-        actorWarCount < 2 &&
-        actor.diplomacy.warExhaustion < 0.62 &&
+        actorWarCount < 3 &&
+        actor.diplomacy.warExhaustion < 0.74 &&
+        warCooldownUntil <= state.meta.lastUpdatedAt &&
         actor.stability > 37 &&
-        aggressionIndex > 0.54 &&
-        strengthRatio > 1.04;
+        aggressionIndex > 0.5 &&
+        strengthRatio > 0.98;
 
       if (
         canOpenWar &&

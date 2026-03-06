@@ -5,7 +5,7 @@ import type { GameState } from "../../core/models/game-state";
 import { buildTreatyId, buildWarIdFromSides, sortUniqueIds } from "../../core/models/identifiers";
 import type { WarId } from "../../core/models/types";
 
-export const SAVE_SCHEMA_VERSION = 2;
+export const SAVE_SCHEMA_VERSION = 3;
 
 export interface SaveEnvelope {
   schemaVersion: number;
@@ -105,6 +105,19 @@ function migrateStateToCurrent(state: GameState): GameState {
   const migrated = structuredClone(state);
   migrateWars(migrated);
   migrateTreaties(migrated);
+
+  const worldMutable = migrated.world as GameState["world"] & {
+    definitions?: unknown;
+    routes?: unknown;
+    neighborsByRegionId?: unknown;
+  };
+  delete worldMutable.definitions;
+  delete worldMutable.routes;
+  delete worldMutable.neighborsByRegionId;
+
+  if (typeof migrated.world.mapId !== "string" || migrated.world.mapId.length === 0) {
+    migrated.world.mapId = migrated.campaign.mapId;
+  }
 
   for (const kingdomId of Object.keys(migrated.kingdoms).sort()) {
     const kingdom = migrated.kingdoms[kingdomId];

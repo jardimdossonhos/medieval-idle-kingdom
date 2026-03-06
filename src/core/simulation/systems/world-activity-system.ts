@@ -56,7 +56,12 @@ export function createWorldActivitySystem(): SimulationSystem {
       }
 
       context.events.push({
-        id: createEventId("evt_world_summary", context.nextState.meta.tick, context.events.length),
+        id: createEventId({
+          prefix: "evt_world_summary",
+          tick: context.nextState.meta.tick,
+          systemId: "world_activity",
+          sequence: 0
+        }),
         type: "world.activity_summary",
         payload: {
           warsStarted: activity.warsStarted,

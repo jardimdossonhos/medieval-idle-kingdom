@@ -46,7 +46,5 @@ export interface StrategicRoute {
 
 export interface WorldState {
   mapId: string;
-  definitions: Record<RegionId, RegionDefinition>;
   regions: Record<RegionId, RegionState>;
-  routes: StrategicRoute[];
 }

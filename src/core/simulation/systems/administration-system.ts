@@ -17,8 +17,11 @@ export function createAdministrationSystem(): SimulationSystem {
     id: "administration",
     run(context): void {
       const state = context.nextState;
+      const definitions = context.staticData.definitions;
+      let eventSeq = 0;
 
-      for (const kingdom of Object.values(state.kingdoms)) {
+      for (const kingdomId of Object.keys(state.kingdoms).sort()) {
+        const kingdom = state.kingdoms[kingdomId];
         const ownedRegionIds = getOwnedRegionIds(state, kingdom.id);
         const controlsByRegion = new Map(kingdom.administration.regionalControl.map((entry) => [entry.regionId, entry]));
 
@@ -34,7 +37,7 @@ export function createAdministrationSystem(): SimulationSystem {
 
         for (const regionId of ownedRegionIds) {
           const region = state.world.regions[regionId];
-          const definition = state.world.definitions[regionId];
+          const definition = definitions[regionId];
 
           if (!region || !definition) {
             continue;
@@ -76,7 +79,13 @@ export function createAdministrationSystem(): SimulationSystem {
 
           if (control.revoltRisk > 0.78 && state.meta.tick % 7 === 0) {
             context.events.push({
-              id: createEventId("evt_revolt", state.meta.tick, context.events.length),
+              id: createEventId({
+                prefix: "evt_revolt",
+                tick: state.meta.tick,
+                systemId: "administration",
+                actorId: kingdom.id,
+                sequence: eventSeq++
+              }),
               type: "administration.revolt_risk",
               actorKingdomId: kingdom.id,
               payload: {

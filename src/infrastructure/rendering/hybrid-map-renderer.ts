@@ -1,4 +1,5 @@
-﻿import type { KingdomState } from "../../core/models/game-state";
+import type { KingdomState } from "../../core/models/game-state";
+import type { StaticWorldData } from "../../core/models/static-world-data";
 import type { WorldState } from "../../core/models/world";
 import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 import { MapLibreWorldRenderer } from "./maplibre-world-renderer";
@@ -9,6 +10,7 @@ export class HybridMapRenderer implements GameMapRenderer {
 
   constructor(
     private readonly container: HTMLElement,
+    private readonly staticData: StaticWorldData,
     private readonly onRegionSelect?: (selection: MapSelection) => void
   ) {
     this.active = new MapLibreWorldRenderer(container, onRegionSelect);
@@ -19,7 +21,7 @@ export class HybridMapRenderer implements GameMapRenderer {
       await this.active.mount(world, kingdoms);
     } catch {
       this.active.destroy();
-      this.active = new PixiMapRenderer(this.container, this.onRegionSelect);
+      this.active = new PixiMapRenderer(this.container, this.staticData, this.onRegionSelect);
       await this.active.mount(world, kingdoms);
     }
   }

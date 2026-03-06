@@ -1,7 +1,8 @@
 ﻿import "./styles/global.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { createInitialState } from "./application/boot/create-initial-state";
-import { GameSession, type DiplomaticActionType, type RegionActionType, type TechnologyChoice } from "./application/game-session";
+import { createStaticWorldData } from "./application/boot/static-world-data";
+import { GameSession, type DiplomaticActionType, type RegionActionType, type RuntimeMetrics, type TechnologyChoice } from "./application/game-session";
 import { AutomationLevel, TechnologyDomain, type ResourceType } from "./core/models/enums";
 import { createDefaultSimulationSystems } from "./core/simulation/create-default-systems";
 import type { SaveSummary } from "./core/contracts/game-ports";
@@ -34,6 +35,9 @@ interface UiRefs {
   safetySaveButton: HTMLButtonElement;
   refreshSavesButton: HTMLButtonElement;
   toastArea: HTMLElement;
+  devTickLastValue: HTMLElement;
+  devTickAvgValue: HTMLElement;
+  devOfflineValue: HTMLElement;
   mapCanvas: HTMLElement;
   mapLayerSelect: HTMLSelectElement;
   resourceList: HTMLElement;
@@ -271,6 +275,14 @@ async function bootstrapApp(): Promise<void> {
         <button id="open-saves-btn">Menu de saves</button>
         <span id="toast-area" class="toast"></span>
       </section>
+      <aside class="dev-overlay card">
+        <h3>Desempenho (dev)</h3>
+        <div class="summary-grid">
+          <span>Tick (ms) último</span><strong id="dev-tick-last">0</strong>
+          <span>Tick (ms) média</span><strong id="dev-tick-avg">0</strong>
+          <span>Offline catch-up</span><strong id="dev-offline">0 ms / 0 ticks</strong>
+        </div>
+      </aside>
 
       <section class="map-workspace">
         <article class="card map-card">
@@ -435,6 +447,9 @@ async function bootstrapApp(): Promise<void> {
     safetySaveButton: queryElement(appRoot, "#safety-save-btn"),
     refreshSavesButton: queryElement(appRoot, "#refresh-saves-btn"),
     toastArea: queryElement(appRoot, "#toast-area"),
+    devTickLastValue: queryElement(appRoot, "#dev-tick-last"),
+    devTickAvgValue: queryElement(appRoot, "#dev-tick-avg"),
+    devOfflineValue: queryElement(appRoot, "#dev-offline"),
     mapCanvas: queryElement(appRoot, "#map-canvas"),
     mapLayerSelect: queryElement(appRoot, "#map-layer-select"),
     resourceList: queryElement(appRoot, "#resource-list"),
@@ -531,13 +546,15 @@ async function bootstrapApp(): Promise<void> {
     return governmentInputs.includes(active as HTMLInputElement);
   }
 
+  const staticWorldData = createStaticWorldData();
   const eventBus = new LocalEventBus();
   const npcDecisionService = new RuleBasedNpcDecisionService();
   const diplomacyResolver = new LocalDiplomacyResolver();
-  const warResolver = new LocalWarResolver();
+  const warResolver = new LocalWarResolver(staticWorldData);
   const session = new GameSession({
     gameStateRepository: new IndexedDbGameStateRepository(),
     saveRepository: new IndexedDbSaveRepository(),
+    staticWorldData,
     commandLogRepository: new IndexedDbCommandLogRepository(),
     snapshotRepository: new IndexedDbSnapshotRepository(),
     clock: new BrowserClockService(1_000),
@@ -550,12 +567,12 @@ async function bootstrapApp(): Promise<void> {
       warResolver
     }),
     autosaveEveryTicks: 5,
-    maxOfflineTicks: 1_800,
+    maxOfflineTicks: 12_000,
     snapshotEveryTicks: 25,
     maxSnapshots: 20
   });
 
-  const mapRenderer = new HybridMapRenderer(ui.mapCanvas, (selection: MapSelection) => {
+  const mapRenderer = new HybridMapRenderer(ui.mapCanvas, staticWorldData, (selection: MapSelection) => {
     selectedRegionId = selection.regionId;
     selectedMapLabel = selection.label ?? selection.regionId;
     renderRegionInfo(session.getState());
@@ -578,6 +595,12 @@ async function bootstrapApp(): Promise<void> {
     ui.postVictoryValue.textContent = state.victory.postVictoryMode
       ? `${formatNumber(state.victory.crisisPressure * 100)}%`
       : "-";
+  }
+
+  function renderRuntimeMetrics(metrics: RuntimeMetrics): void {
+    ui.devTickLastValue.textContent = formatNumber(metrics.tickMsLast);
+    ui.devTickAvgValue.textContent = formatNumber(metrics.tickMsAverage);
+    ui.devOfflineValue.textContent = `${formatNumber(metrics.offlineCatchUpMs)} ms / ${metrics.offlineTicks} ticks`;
   }
 
   function renderResources(state: GameState): void {
@@ -715,7 +738,7 @@ async function bootstrapApp(): Promise<void> {
     }
 
     const region = state.world.regions[selectedRegionId];
-    const regionDef = state.world.definitions[selectedRegionId];
+    const regionDef = staticWorldData.definitions[selectedRegionId];
 
     if (!region || !regionDef) {
       const label = selectedMapLabel ?? selectedRegionId;
@@ -931,7 +954,7 @@ async function bootstrapApp(): Promise<void> {
         continue;
       }
 
-      const definition = state.world.definitions[regionId];
+      const definition = staticWorldData.definitions[regionId];
       for (const neighborRegionId of definition?.neighbors ?? []) {
         const neighborOwner = state.world.regions[neighborRegionId]?.ownerId;
         if (neighborOwner && neighborOwner !== player.id) {
@@ -1034,6 +1057,7 @@ async function bootstrapApp(): Promise<void> {
   function buildMapRenderContext(state: GameState): MapRenderContext {
     const contestedRegionIds = new Set<string>();
     const recentlyCapturedRegionIds = new Set<string>();
+    const activeWarMarkerRegionIds = new Set<string>();
     const recentCaptureWindowMs = Math.max(30_000, state.meta.tickDurationMs * 24);
 
     for (const warId of Object.keys(state.wars).sort()) {
@@ -1041,6 +1065,7 @@ async function bootstrapApp(): Promise<void> {
 
       for (const front of [...war.fronts].sort((left, right) => left.regionId.localeCompare(right.regionId))) {
         contestedRegionIds.add(front.regionId);
+        activeWarMarkerRegionIds.add(front.regionId);
       }
     }
 
@@ -1062,7 +1087,9 @@ async function bootstrapApp(): Promise<void> {
 
     return {
       contestedRegionIds: Array.from(contestedRegionIds).sort(),
-      recentlyCapturedRegionIds: Array.from(recentlyCapturedRegionIds).sort()
+      recentlyCapturedRegionIds: Array.from(recentlyCapturedRegionIds).sort(),
+      activeWarMarkerRegionIds: Array.from(activeWarMarkerRegionIds).sort(),
+      animationClockMs: typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now()
     };
   }
 
@@ -1114,6 +1141,7 @@ async function bootstrapApp(): Promise<void> {
 
   function renderState(state: GameState): void {
     renderHeader(state);
+    renderRuntimeMetrics(session.getRuntimeMetrics());
     renderResources(state);
     renderRiskIndicators(state);
     renderExplainers(state);
@@ -1250,7 +1278,7 @@ async function bootstrapApp(): Promise<void> {
 
   syncProfileUi();
 
-  const initialState = await session.bootstrap(createInitialState());
+  const initialState = await session.bootstrap(createInitialState(staticWorldData));
   mapRenderer.setLayer("owner");
   await mapRenderer.mount(initialState.world, initialState.kingdoms);
 
@@ -1282,3 +1310,5 @@ void bootstrapApp().catch((error: unknown) => {
     `;
   }
 });
+
+

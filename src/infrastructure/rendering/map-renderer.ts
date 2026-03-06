@@ -11,6 +11,8 @@ export interface MapSelection {
 export interface MapRenderContext {
   contestedRegionIds?: readonly string[];
   recentlyCapturedRegionIds?: readonly string[];
+  activeWarMarkerRegionIds?: readonly string[];
+  animationClockMs?: number;
 }
 
 export interface GameMapRenderer {

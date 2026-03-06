@@ -8,6 +8,8 @@ export function createEconomySystem(): SimulationSystem {
     id: "economy",
     run(context): void {
       const state = context.nextState;
+      const definitions = context.staticData.definitions;
+      let eventSeq = 0;
 
       for (const kingdomId of Object.keys(state.kingdoms).sort()) {
         const kingdom = state.kingdoms[kingdomId];
@@ -15,7 +17,7 @@ export function createEconomySystem(): SimulationSystem {
 
         const regionEconomy = ownedRegionIds.reduce(
           (acc, regionId) => {
-            const definition = state.world.definitions[regionId];
+            const definition = definitions[regionId];
             const region = state.world.regions[regionId];
 
             if (!definition || !region) {
@@ -112,7 +114,13 @@ export function createEconomySystem(): SimulationSystem {
 
         if (kingdom.economy.stock[ResourceType.Food] < kingdom.population.total / 8_000 && context.nextState.meta.tick % 5 === 0) {
           context.events.push({
-            id: createEventId("evt_food", context.nextState.meta.tick, context.events.length),
+            id: createEventId({
+              prefix: "evt_food",
+              tick: context.nextState.meta.tick,
+              systemId: "economy",
+              actorId: kingdom.id,
+              sequence: eventSeq++
+            }),
             type: "economy.food_shortage",
             actorKingdomId: kingdom.id,
             payload: {

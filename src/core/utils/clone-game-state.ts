@@ -1,0 +1,21 @@
+import type { GameState } from "../models/game-state";
+
+export function cloneGameStateForSimulation(previousState: GameState): GameState {
+  return {
+    meta: {
+      ...previousState.meta
+    },
+    campaign: previousState.campaign,
+    world: {
+      mapId: previousState.world.mapId,
+      regions: structuredClone(previousState.world.regions)
+    },
+    kingdoms: structuredClone(previousState.kingdoms),
+    wars: structuredClone(previousState.wars),
+    events: structuredClone(previousState.events),
+    victory: {
+      ...previousState.victory
+    },
+    randomSeed: previousState.randomSeed
+  };
+}

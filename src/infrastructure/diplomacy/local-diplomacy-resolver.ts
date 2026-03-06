@@ -19,13 +19,29 @@ function roundTo(value: number, decimals = 3): number {
 function getOwnedRegionCount(state: GameState, kingdomId: KingdomId): number {
   let total = 0;
 
-  for (const region of Object.values(state.world.regions)) {
+  for (const regionId of Object.keys(state.world.regions).sort()) {
+    const region = state.world.regions[regionId];
     if (region.ownerId === kingdomId) {
       total += 1;
     }
   }
 
   return total;
+}
+
+function buildTerritoryCounts(state: GameState): Map<KingdomId, number> {
+  const counts = new Map<KingdomId, number>();
+
+  for (const kingdomId of Object.keys(state.kingdoms).sort()) {
+    counts.set(kingdomId, 0);
+  }
+
+  for (const regionId of Object.keys(state.world.regions).sort()) {
+    const ownerId = state.world.regions[regionId].ownerId;
+    counts.set(ownerId, (counts.get(ownerId) ?? 0) + 1);
+  }
+
+  return counts;
 }
 
 function ensureRelation(kingdom: KingdomState, otherKingdomId: KingdomId): BilateralRelation {
@@ -136,7 +152,16 @@ export class LocalDiplomacyResolver implements DiplomacyResolver {
       .map((kingdomId) => state.kingdoms[kingdomId])
       .find((kingdom) => kingdom.isPlayer);
     const totalRegions = Math.max(1, Object.keys(state.world.regions).length);
+    const territoryCounts = buildTerritoryCounts(state);
     const playerTerritoryShare = player ? getOwnedRegionCount(state, player.id) / totalRegions : 0;
+    const dominantEntry = Array.from(territoryCounts.entries()).sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1];
+      }
+      return left[0].localeCompare(right[0]);
+    })[0];
+    const dominantKingdomId = dominantEntry?.[0] ?? null;
+    const dominantShare = dominantEntry ? dominantEntry[1] / totalRegions : 0;
 
     for (const kingdomId of Object.keys(state.kingdoms).sort()) {
       const kingdom = state.kingdoms[kingdomId];
@@ -174,13 +199,44 @@ export class LocalDiplomacyResolver implements DiplomacyResolver {
         }
       }
 
-      if (!kingdom.isPlayer && player) {
-        const relationToPlayer = kingdom.diplomacy.relations[player.id];
-        const rivalry = relationToPlayer?.score.rivalry ?? 0.3;
-        const trust = relationToPlayer?.score.trust ?? 0.4;
+      if (dominantKingdomId && dominantKingdomId !== kingdom.id) {
+        const ownShare = (territoryCounts.get(kingdom.id) ?? 0) / totalRegions;
+        const dominantPressure = clamp((dominantShare - ownShare) * 1.45, 0, 1);
+        const relationToDominant = kingdom.diplomacy.relations[dominantKingdomId];
+
+        if (relationToDominant && dominantPressure > 0.08) {
+          relationToDominant.score.rivalry = roundTo(clamp(relationToDominant.score.rivalry + 0.004 + dominantPressure * 0.012, 0, 1));
+          relationToDominant.score.fear = roundTo(clamp(relationToDominant.score.fear + 0.005 + dominantPressure * 0.014, 0, 1));
+          relationToDominant.score.trust = roundTo(clamp(relationToDominant.score.trust - 0.003 - dominantPressure * 0.01, 0, 1));
+        }
+
+        if (!kingdom.isPlayer && dominantPressure > 0.16) {
+          for (const relationId of Object.keys(kingdom.diplomacy.relations).sort()) {
+            if (relationId === dominantKingdomId || relationId === kingdom.id) {
+              continue;
+            }
+
+            const allyShare = (territoryCounts.get(relationId) ?? 0) / totalRegions;
+            if (dominantShare - allyShare <= 0.08) {
+              continue;
+            }
+
+            const relation = kingdom.diplomacy.relations[relationId];
+            relation.score.trust = roundTo(clamp(relation.score.trust + 0.004, 0, 1));
+            relation.score.rivalry = roundTo(clamp(relation.score.rivalry - 0.003, 0, 1));
+          }
+        }
+      }
+
+      if (!kingdom.isPlayer) {
+        const threatTargetId = dominantKingdomId ?? player?.id;
+        const relationToThreat = threatTargetId ? kingdom.diplomacy.relations[threatTargetId] : undefined;
+        const rivalry = relationToThreat?.score.rivalry ?? 0.3;
+        const trust = relationToThreat?.score.trust ?? 0.4;
+        const pressure = threatTargetId === player?.id ? playerTerritoryShare : dominantShare;
 
         kingdom.diplomacy.coalitionThreat = roundTo(
-          clamp(playerTerritoryShare * 0.75 + rivalry * 0.2 + (1 - trust) * 0.15 + kingdom.diplomacy.warExhaustion * 0.1, 0, 1)
+          clamp(pressure * 0.7 + rivalry * 0.22 + (1 - trust) * 0.16 + kingdom.diplomacy.warExhaustion * 0.12, 0, 1)
         );
       }
     }

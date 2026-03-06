@@ -3,10 +3,14 @@ import type { Treaty } from "../../core/models/diplomacy";
 import { DiplomaticRelation, TreatyType } from "../../core/models/enums";
 import type { GameState, KingdomState, WarFront, WarState } from "../../core/models/game-state";
 import { buildTreatyId, buildWarId, sortUniqueIds } from "../../core/models/identifiers";
+import type { StaticWorldData } from "../../core/models/static-world-data";
 import type { KingdomId } from "../../core/models/types";
 
 const PEACE_TREATY_DURATION_MS = 1000 * 60 * 28;
-const CONQUEST_THRESHOLD = 62;
+const WAR_DECLARATION_COOLDOWN_MS = 1000 * 60 * 6;
+const WAR_TRUCE_COOLDOWN_MS = 1000 * 60 * 12;
+const WAR_COOLDOWN_KEY = "war:declaration";
+const CONQUEST_THRESHOLD = 54;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -15,6 +19,27 @@ function clamp(value: number, min: number, max: number): number {
 function roundTo(value: number, decimals = 3): number {
   const factor = 10 ** decimals;
   return Math.round(value * factor) / factor;
+}
+
+function relationCooldownUntil(state: GameState, leftId: KingdomId, rightId: KingdomId): number {
+  const left = state.kingdoms[leftId]?.diplomacy.relations[rightId]?.actionCooldowns?.[WAR_COOLDOWN_KEY] ?? 0;
+  const right = state.kingdoms[rightId]?.diplomacy.relations[leftId]?.actionCooldowns?.[WAR_COOLDOWN_KEY] ?? 0;
+  return Math.max(left, right);
+}
+
+function applyRelationCooldown(state: GameState, leftId: KingdomId, rightId: KingdomId, until: number): void {
+  const left = state.kingdoms[leftId]?.diplomacy.relations[rightId];
+  const right = state.kingdoms[rightId]?.diplomacy.relations[leftId];
+
+  if (left) {
+    left.actionCooldowns = left.actionCooldowns ?? {};
+    left.actionCooldowns[WAR_COOLDOWN_KEY] = until;
+  }
+
+  if (right) {
+    right.actionCooldowns = right.actionCooldowns ?? {};
+    right.actionCooldowns[WAR_COOLDOWN_KEY] = until;
+  }
 }
 
 function militaryPower(kingdom: KingdomState): number {
@@ -42,7 +67,8 @@ function isAtWar(kingdomId: KingdomId, war: WarState): boolean {
 }
 
 function areInActiveWar(state: GameState, leftId: KingdomId, rightId: KingdomId): boolean {
-  for (const war of Object.values(state.wars)) {
+  for (const warId of Object.keys(state.wars).sort()) {
+    const war = state.wars[warId];
     const leftInWar = isAtWar(leftId, war);
     const rightInWar = isAtWar(rightId, war);
 
@@ -126,28 +152,33 @@ function addPeaceTreaty(state: GameState, leftId: KingdomId, rightId: KingdomId,
   addTreaty(right, treaty);
 }
 
-function findBorderFronts(state: GameState, attackerId: KingdomId, defenderId: KingdomId): WarFront[] {
-  const attackerRegions = Object.values(state.world.regions)
-    .filter((region) => region.ownerId === attackerId)
-    .map((region) => region.regionId)
+function findBorderFronts(
+  state: GameState,
+  definitions: StaticWorldData["definitions"],
+  attackerId: KingdomId,
+  defenderId: KingdomId
+): WarFront[] {
+  const attackerRegions = Object.keys(state.world.regions)
+    .sort()
+    .filter((regionId) => state.world.regions[regionId].ownerId === attackerId)
     .sort();
 
   const defenderRegionSet = new Set(
-    Object.values(state.world.regions)
-      .filter((region) => region.ownerId === defenderId)
-      .map((region) => region.regionId)
+    Object.keys(state.world.regions)
+      .sort()
+      .filter((regionId) => state.world.regions[regionId].ownerId === defenderId)
   );
 
   const fronts: WarFront[] = [];
 
   for (const regionId of attackerRegions) {
-    const definition = state.world.definitions[regionId];
+    const definition = definitions[regionId];
 
     if (!definition) {
       continue;
     }
 
-    for (const neighborId of definition.neighbors) {
+    for (const neighborId of [...definition.neighbors].sort()) {
       if (!defenderRegionSet.has(neighborId)) {
         continue;
       }
@@ -184,7 +215,12 @@ function reduceArmyForWar(kingdom: KingdomState, intensity: number): void {
   }
 }
 
-function applyConquest(state: GameState, winners: KingdomId[], losers: KingdomId[]): { regionId: string; previousOwnerId: KingdomId; newOwnerId: KingdomId } | null {
+function applyConquest(
+  state: GameState,
+  definitions: StaticWorldData["definitions"],
+  winners: KingdomId[],
+  losers: KingdomId[]
+): { regionId: string; previousOwnerId: KingdomId; newOwnerId: KingdomId } | null {
   if (winners.length === 0 || losers.length === 0) {
     return null;
   }
@@ -192,15 +228,15 @@ function applyConquest(state: GameState, winners: KingdomId[], losers: KingdomId
   const winnerId = winners[0];
   const loserSet = new Set(losers);
 
-  const winnerRegions = Object.values(state.world.regions)
-    .filter((region) => region.ownerId === winnerId)
-    .map((region) => region.regionId)
+  const winnerRegions = Object.keys(state.world.regions)
+    .sort()
+    .filter((regionId) => state.world.regions[regionId].ownerId === winnerId)
     .sort();
 
   const candidates = new Set<string>();
 
   for (const winnerRegionId of winnerRegions) {
-    const definition = state.world.definitions[winnerRegionId];
+    const definition = definitions[winnerRegionId];
 
     if (!definition) {
       continue;
@@ -218,8 +254,8 @@ function applyConquest(state: GameState, winners: KingdomId[], losers: KingdomId
 
   if (candidates.size > 0) {
     const sortedCandidates = Array.from(candidates).sort((a, b) => {
-      const va = state.world.definitions[a]?.strategicValue ?? 0;
-      const vb = state.world.definitions[b]?.strategicValue ?? 0;
+      const va = definitions[a]?.strategicValue ?? 0;
+      const vb = definitions[b]?.strategicValue ?? 0;
       if (vb !== va) {
         return vb - va;
       }
@@ -228,9 +264,9 @@ function applyConquest(state: GameState, winners: KingdomId[], losers: KingdomId
 
     targetRegionId = sortedCandidates[0] ?? null;
   } else {
-    const fallback = Object.values(state.world.regions)
-      .filter((region) => loserSet.has(region.ownerId))
-      .map((region) => region.regionId)
+    const fallback = Object.keys(state.world.regions)
+      .sort()
+      .filter((regionId) => loserSet.has(state.world.regions[regionId].ownerId))
       .sort()[0];
 
     targetRegionId = fallback ?? null;
@@ -258,9 +294,15 @@ function applyConquest(state: GameState, winners: KingdomId[], losers: KingdomId
 }
 
 export class LocalWarResolver implements WarResolver {
+  constructor(private readonly staticWorldData: StaticWorldData) {}
+
   evaluateWarRisk(attacker: KingdomState, defender: KingdomState, state: GameState): number {
     const now = state.meta.lastUpdatedAt;
     if (hasActivePeaceTreaty(state, attacker.id, defender.id, now) || areInActiveWar(state, attacker.id, defender.id)) {
+      return 0;
+    }
+
+    if (relationCooldownUntil(state, attacker.id, defender.id) > now) {
       return 0;
     }
 
@@ -294,12 +336,16 @@ export class LocalWarResolver implements WarResolver {
       return state;
     }
 
+    if (relationCooldownUntil(state, attackerId, defenderId) > now) {
+      return state;
+    }
+
     const warId = buildWarId(attackerId, defenderId, state.meta.tick);
     if (state.wars[warId]) {
       return state;
     }
 
-    const fronts = findBorderFronts(state, attackerId, defenderId);
+    const fronts = findBorderFronts(state, this.staticWorldData.definitions, attackerId, defenderId);
 
     state.wars[warId] = {
       id: warId,
@@ -311,6 +357,7 @@ export class LocalWarResolver implements WarResolver {
     };
 
     setPairStatus(state, attackerId, defenderId, DiplomaticRelation.Hostile);
+    applyRelationCooldown(state, attackerId, defenderId, now + WAR_DECLARATION_COOLDOWN_MS);
 
     state.kingdoms[attackerId].diplomacy.warExhaustion = roundTo(
       clamp(state.kingdoms[attackerId].diplomacy.warExhaustion + 0.02, 0, 1)
@@ -335,6 +382,7 @@ export class LocalWarResolver implements WarResolver {
       for (const defenderId of war.defenders) {
         setPairStatus(state, attackerId, defenderId, DiplomaticRelation.Truce);
         addPeaceTreaty(state, attackerId, defenderId, signedAt);
+        applyRelationCooldown(state, attackerId, defenderId, signedAt + WAR_TRUCE_COOLDOWN_MS);
       }
     }
 
@@ -350,7 +398,8 @@ export class LocalWarResolver implements WarResolver {
   resolveTick(state: GameState, now: number): GameState {
     const warsToPeace: string[] = [];
 
-    for (const war of Object.values(state.wars)) {
+    for (const warId of Object.keys(state.wars).sort()) {
+      const war = state.wars[warId];
       const attackerPower = participantPower(state, war.attackers);
       const defenderPower = participantPower(state, war.defenders);
       const combinedPower = Math.max(1, attackerPower + defenderPower);
@@ -363,34 +412,40 @@ export class LocalWarResolver implements WarResolver {
       const pressureDelta = (attackerPower - defenderPower) / combinedPower;
       war.warScore = roundTo(clamp(war.warScore + pressureDelta * 12, -100, 100));
 
-      for (const front of war.fronts) {
+      for (const front of [...war.fronts].sort((left, right) => left.regionId.localeCompare(right.regionId))) {
         front.pressureAttackers = roundTo(clamp(front.pressureAttackers + pressureDelta * 8, 0, 100));
         front.pressureDefenders = roundTo(clamp(100 - front.pressureAttackers, 0, 100));
       }
 
       const intensity = clamp(Math.abs(pressureDelta) + 0.25, 0.2, 1);
+      const ageTicks = (now - war.startedAt) / Math.max(1, state.meta.tickDurationMs);
+      const longWarPressure = clamp((ageTicks - 26) / 38, 0, 1);
 
       for (const attackerId of war.attackers) {
         const attacker = state.kingdoms[attackerId];
         reduceArmyForWar(attacker, intensity);
-        attacker.diplomacy.warExhaustion = roundTo(clamp(attacker.diplomacy.warExhaustion + 0.003 + intensity * 0.004, 0, 1));
+        attacker.diplomacy.warExhaustion = roundTo(
+          clamp(attacker.diplomacy.warExhaustion + 0.003 + intensity * 0.004 + longWarPressure * 0.008, 0, 1)
+        );
+        attacker.economy.stock.gold = roundTo(Math.max(0, attacker.economy.stock.gold - longWarPressure * (0.22 + intensity * 0.14)));
       }
 
       for (const defenderId of war.defenders) {
         const defender = state.kingdoms[defenderId];
         reduceArmyForWar(defender, intensity);
-        defender.diplomacy.warExhaustion = roundTo(clamp(defender.diplomacy.warExhaustion + 0.0035 + intensity * 0.004, 0, 1));
+        defender.diplomacy.warExhaustion = roundTo(
+          clamp(defender.diplomacy.warExhaustion + 0.0035 + intensity * 0.004 + longWarPressure * 0.009, 0, 1)
+        );
+        defender.economy.stock.gold = roundTo(Math.max(0, defender.economy.stock.gold - longWarPressure * (0.24 + intensity * 0.16)));
       }
 
       if (war.warScore >= CONQUEST_THRESHOLD) {
-        applyConquest(state, war.attackers, war.defenders);
+        applyConquest(state, this.staticWorldData.definitions, war.attackers, war.defenders);
         war.warScore = roundTo(clamp(war.warScore - 38, -100, 100));
       } else if (war.warScore <= -CONQUEST_THRESHOLD) {
-        applyConquest(state, war.defenders, war.attackers);
+        applyConquest(state, this.staticWorldData.definitions, war.defenders, war.attackers);
         war.warScore = roundTo(clamp(war.warScore + 38, -100, 100));
       }
-
-      const ageTicks = (now - war.startedAt) / Math.max(1, state.meta.tickDurationMs);
 
       if ((ageTicks > 42 && Math.abs(war.warScore) < 12) || this.mustForcePeace(war, state)) {
         warsToPeace.push(war.id);
