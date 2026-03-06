@@ -42,9 +42,9 @@ interface UiRefs {
   safetySaveButton: HTMLButtonElement;
   refreshSavesButton: HTMLButtonElement;
   toastArea: HTMLElement;
-  devTickLastValue: HTMLElement;
-  devTickAvgValue: HTMLElement;
-  devOfflineValue: HTMLElement;
+  devTickLastValue: HTMLElement | null;
+  devTickAvgValue: HTMLElement | null;
+  devOfflineValue: HTMLElement | null;
   mapCanvas: HTMLElement;
   mapLayerSelect: HTMLSelectElement;
   resourceList: HTMLElement;
@@ -100,6 +100,11 @@ function queryElement<T extends Element>(root: ParentNode, selector: string): T 
   }
 
   return element as T;
+}
+
+function queryOptionalElement<T extends Element>(root: ParentNode, selector: string): T | null {
+  const element = root.querySelector(selector);
+  return element ? (element as T) : null;
 }
 
 function formatNumber(value: number): string {
@@ -250,6 +255,7 @@ async function bootstrapApp(): Promise<void> {
 
   document.documentElement.lang = "pt-BR";
   document.title = "Reino Idle Medieval";
+  const showDevMetrics = import.meta.env.DEV;
 
   appRoot.innerHTML = `
     <main class="app-shell">
@@ -282,14 +288,6 @@ async function bootstrapApp(): Promise<void> {
         <button id="open-saves-btn">Menu de saves</button>
         <span id="toast-area" class="toast"></span>
       </section>
-      <aside class="dev-overlay card">
-        <h3>Desempenho (dev)</h3>
-        <div class="summary-grid">
-          <span>Tick (ms) último</span><strong id="dev-tick-last">0</strong>
-          <span>Tick (ms) média</span><strong id="dev-tick-avg">0</strong>
-          <span>Offline catch-up</span><strong id="dev-offline">0 ms / 0 ticks</strong>
-        </div>
-      </aside>
 
       <section class="map-workspace">
         <article class="card map-card">
@@ -434,6 +432,17 @@ async function bootstrapApp(): Promise<void> {
             <span>Ciclo da simulação</span><strong>1 ciclo = 1 tick do reino</strong>
             <span>Observação multiplayer</span><strong>Conta ainda local-first (sem login online)</strong>
           </div>
+          ${
+            showDevMetrics
+              ? `
+          <div class="summary-grid">
+            <span>Tick (ms) último</span><strong id="dev-tick-last">0</strong>
+            <span>Tick (ms) média</span><strong id="dev-tick-avg">0</strong>
+            <span>Offline catch-up</span><strong id="dev-offline">0 ms / 0 ticks</strong>
+          </div>
+          `
+              : ""
+          }
           <button id="profile-save-btn">Salvar perfil local</button>
           <p class="hint-text">Este perfil local prepara o caminho para autenticação e sincronização entre dispositivos no multiplayer futuro.</p>
         </article>
@@ -455,9 +464,9 @@ async function bootstrapApp(): Promise<void> {
     safetySaveButton: queryElement(appRoot, "#safety-save-btn"),
     refreshSavesButton: queryElement(appRoot, "#refresh-saves-btn"),
     toastArea: queryElement(appRoot, "#toast-area"),
-    devTickLastValue: queryElement(appRoot, "#dev-tick-last"),
-    devTickAvgValue: queryElement(appRoot, "#dev-tick-avg"),
-    devOfflineValue: queryElement(appRoot, "#dev-offline"),
+    devTickLastValue: queryOptionalElement(appRoot, "#dev-tick-last"),
+    devTickAvgValue: queryOptionalElement(appRoot, "#dev-tick-avg"),
+    devOfflineValue: queryOptionalElement(appRoot, "#dev-offline"),
     mapCanvas: queryElement(appRoot, "#map-canvas"),
     mapLayerSelect: queryElement(appRoot, "#map-layer-select"),
     resourceList: queryElement(appRoot, "#resource-list"),
@@ -606,6 +615,10 @@ async function bootstrapApp(): Promise<void> {
   }
 
   function renderRuntimeMetrics(metrics: RuntimeMetrics): void {
+    if (!ui.devTickLastValue || !ui.devTickAvgValue || !ui.devOfflineValue) {
+      return;
+    }
+
     ui.devTickLastValue.textContent = formatNumber(metrics.tickMsLast);
     ui.devTickAvgValue.textContent = formatNumber(metrics.tickMsAverage);
     ui.devOfflineValue.textContent = `${formatNumber(metrics.offlineCatchUpMs)} ms / ${metrics.offlineTicks} ticks`;

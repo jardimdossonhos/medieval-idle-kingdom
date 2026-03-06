@@ -113,6 +113,7 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
       this.mounted = true;
     }
 
+    this.map.resize();
     this.render(world, kingdoms);
   }
 
@@ -354,17 +355,19 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
   }
 
   private async loadGeoJson(): Promise<CountryFeatureCollection> {
-    const relativeCandidates = ["assets/maps/world-countries-v1.geojson", "assets/maps/world-countries-v0.geojson"];
-    const resolvedUrls = new Set<string>();
+    const failures: string[] = [];
 
-    for (const relativePath of relativeCandidates) {
-      resolvedUrls.add(new URL(relativePath, document.baseURI).toString());
-      resolvedUrls.add(new URL(`./${relativePath}`, window.location.href).toString());
-    }
+    for (const url of buildGeoJsonUrlCandidates()) {
+      let response: Response;
+      try {
+        response = await fetch(url, { cache: "force-cache" });
+      } catch (error) {
+        failures.push(`${url} (${error instanceof Error ? error.message : "erro de rede"})`);
+        continue;
+      }
 
-    for (const url of resolvedUrls) {
-      const response = await fetch(url);
       if (!response.ok) {
+        failures.push(`${url} (HTTP ${response.status})`);
         continue;
       }
 
@@ -372,9 +375,11 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
       if (payload.type === "FeatureCollection" && Array.isArray(payload.features) && payload.features.length > 0) {
         return payload;
       }
+
+      failures.push(`${url} (payload inválido)`);
     }
 
-    throw new Error("Falha ao carregar GeoJSON do mapa mundial.");
+    throw new Error(`Falha ao carregar GeoJSON do mapa mundial. Tentativas: ${failures.join("; ")}`);
   }
 
   private applyLayerMode(): void {
@@ -563,4 +568,24 @@ function colorForFaith(faithId: string, staticData?: StaticWorldData): string {
   const palette = ["#7b4a33", "#ad7b2f", "#4f6c3e", "#b66a6a", "#49657a", "#8a6a9b", "#2f6f74"];
   const hash = faithId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return palette[hash % palette.length];
+}
+
+function buildGeoJsonUrlCandidates(): string[] {
+  const currentUrl = new URL(window.location.href);
+  currentUrl.hash = "";
+  currentUrl.search = "";
+
+  if (!currentUrl.pathname.endsWith("/")) {
+    const hasFileName = currentUrl.pathname.split("/").pop()?.includes(".") ?? false;
+    currentUrl.pathname = hasFileName
+      ? currentUrl.pathname.replace(/[^/]*$/u, "")
+      : `${currentUrl.pathname}/`;
+  }
+
+  return [
+    new URL("assets/maps/world-countries-v1.geojson", currentUrl).toString(),
+    new URL("assets/maps/world-countries-v0.geojson", currentUrl).toString(),
+    new URL("./assets/maps/world-countries-v1.geojson", currentUrl).toString(),
+    new URL("./assets/maps/world-countries-v0.geojson", currentUrl).toString()
+  ];
 }

@@ -19,7 +19,8 @@ export class HybridMapRenderer implements GameMapRenderer {
   async mount(world: WorldState, kingdoms: Record<string, KingdomState>): Promise<void> {
     try {
       await this.active.mount(world, kingdoms);
-    } catch {
+    } catch (error) {
+      console.warn("MapLibre falhou, usando fallback Pixi.", error);
       this.active.destroy();
       this.active = new PixiMapRenderer(this.container, this.staticData, this.onRegionSelect);
       await this.active.mount(world, kingdoms);
