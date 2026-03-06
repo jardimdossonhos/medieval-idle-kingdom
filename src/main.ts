@@ -1,7 +1,7 @@
 ﻿import "./styles/global.css";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { createInitialState } from "./application/boot/create-initial-state";
-import { GameSession, type DiplomaticActionType, type RegionActionType } from "./application/game-session";
+import { GameSession, type DiplomaticActionType, type RegionActionType, type TechnologyChoice } from "./application/game-session";
 import { TechnologyDomain, type ResourceType } from "./core/models/enums";
 import { createDefaultSimulationSystems } from "./core/simulation/create-default-systems";
 import type { SaveSummary } from "./core/contracts/game-ports";
@@ -36,6 +36,7 @@ interface UiRefs {
   mapLayerSelect: HTMLSelectElement;
   resourceList: HTMLElement;
   riskList: HTMLElement;
+  explainList: HTMLElement;
   regionInfo: HTMLElement;
   regionActions: HTMLElement;
   governmentApplyButton: HTMLButtonElement;
@@ -44,6 +45,7 @@ interface UiRefs {
   techFocusSelect: HTMLSelectElement;
   techApplyButton: HTMLButtonElement;
   techSummary: HTMLElement;
+  techTreeList: HTMLElement;
   diplomacyList: HTMLElement;
   militarySummary: HTMLElement;
   saveList: HTMLElement;
@@ -53,6 +55,15 @@ interface UiRefs {
 }
 
 type TabId = "mapa" | "governo" | "diplomacia" | "tecnologia" | "militar" | "eventos" | "saves";
+
+const TECH_DOMAIN_ORDER: TechnologyDomain[] = [
+  TechnologyDomain.Economy,
+  TechnologyDomain.Military,
+  TechnologyDomain.Administration,
+  TechnologyDomain.Religion,
+  TechnologyDomain.Logistics,
+  TechnologyDomain.Engineering
+];
 
 function queryElement<T extends Element>(root: ParentNode, selector: string): T {
   const element = root.querySelector(selector);
@@ -111,6 +122,36 @@ function normalizePercentage(value: string): number {
   }
 
   return round(Math.max(0, parsed));
+}
+
+function techDomainLabel(domain: TechnologyDomain): string {
+  switch (domain) {
+    case TechnologyDomain.Economy:
+      return "Economia";
+    case TechnologyDomain.Military:
+      return "Militar";
+    case TechnologyDomain.Administration:
+      return "Administração";
+    case TechnologyDomain.Religion:
+      return "Religião";
+    case TechnologyDomain.Logistics:
+      return "Logística";
+    case TechnologyDomain.Engineering:
+      return "Engenharia";
+  }
+}
+
+function techStatusLabel(status: TechnologyChoice["status"]): string {
+  switch (status) {
+    case "active":
+      return "Ativa";
+    case "available":
+      return "Disponível";
+    case "unlocked":
+      return "Concluída";
+    case "locked":
+      return "Bloqueada";
+  }
 }
 
 async function bootstrapApp(): Promise<void> {
@@ -176,6 +217,8 @@ async function bootstrapApp(): Promise<void> {
           <article class="card">
             <h2>Riscos estratégicos</h2>
             <ul id="risk-list" class="risk-list"></ul>
+            <h3>Explicabilidade</h3>
+            <ul id="explain-list" class="list compact explain-list"></ul>
           </article>
           <article class="card">
             <h2>Região selecionada</h2>
@@ -246,6 +289,8 @@ async function bootstrapApp(): Promise<void> {
             <button id="tech-apply-btn">Aplicar foco</button>
           </div>
           <div id="tech-summary" class="summary-grid"></div>
+          <h3>Árvore tecnológica</h3>
+          <div id="tech-tree-list" class="tech-tree-list"></div>
         </article>
 
         <article class="card tab-panel is-hidden" data-tab-panel="militar">
@@ -282,6 +327,7 @@ async function bootstrapApp(): Promise<void> {
     mapLayerSelect: queryElement(appRoot, "#map-layer-select"),
     resourceList: queryElement(appRoot, "#resource-list"),
     riskList: queryElement(appRoot, "#risk-list"),
+    explainList: queryElement(appRoot, "#explain-list"),
     regionInfo: queryElement(appRoot, "#region-info"),
     regionActions: queryElement(appRoot, "#region-actions"),
     governmentApplyButton: queryElement(appRoot, "#government-apply-btn"),
@@ -301,6 +347,7 @@ async function bootstrapApp(): Promise<void> {
     techFocusSelect: queryElement(appRoot, "#tech-focus-select"),
     techApplyButton: queryElement(appRoot, "#tech-apply-btn"),
     techSummary: queryElement(appRoot, "#tech-summary"),
+    techTreeList: queryElement(appRoot, "#tech-tree-list"),
     diplomacyList: queryElement(appRoot, "#diplomacy-list"),
     militarySummary: queryElement(appRoot, "#military-summary"),
     saveList: queryElement(appRoot, "#save-list"),
@@ -445,6 +492,81 @@ async function bootstrapApp(): Promise<void> {
     }
   }
 
+  function renderExplainers(state: GameState): void {
+    const player = getPlayerKingdom(state);
+    const explainers: Array<{ label: string; reason: string; suggestion: string; level: "low" | "medium" | "high" }> = [];
+
+    const foodReserveTarget = player.population.total / 8_000;
+    const foodGap = foodReserveTarget <= 0 ? 0 : (foodReserveTarget - player.economy.stock.food) / foodReserveTarget;
+    if (foodGap > 0.35 || player.population.pressure.famineRisk > 0.3) {
+      explainers.push({
+        label: "Pressão alimentar",
+        reason: "A reserva de comida está abaixo da necessidade da população.",
+        suggestion: "Invista em agricultura e aumente orçamento em economia.",
+        level: foodGap > 0.6 ? "high" : "medium"
+      });
+    }
+
+    const adminUsage = player.administration.adminCapacity <= 0
+      ? 0
+      : player.administration.usedCapacity / player.administration.adminCapacity;
+    if (adminUsage > 0.85 || player.administration.corruption > 0.2) {
+      explainers.push({
+        label: "Sobrecarga administrativa",
+        reason: `Capacidade usada em ${formatNumber(adminUsage * 100)}% e corrupção em ${formatNumber(player.administration.corruption * 100)}%.`,
+        suggestion: "Priorize tecnologia de administração e reduza expansão imediata.",
+        level: adminUsage > 0.95 ? "high" : "medium"
+      });
+    }
+
+    const highUnrestRegions = Object.keys(state.world.regions)
+      .sort()
+      .map((regionId) => state.world.regions[regionId])
+      .filter((region) => region.ownerId === player.id && region.unrest > 0.45).length;
+
+    if (highUnrestRegions > 0) {
+      explainers.push({
+        label: "Instabilidade regional",
+        reason: `${highUnrestRegions} região(ões) próprias com risco alto de revolta.`,
+        suggestion: "Use pacificação e guarnição nas regiões críticas.",
+        level: highUnrestRegions >= 3 ? "high" : "medium"
+      });
+    }
+
+    const strongestRival = Object.keys(player.diplomacy.relations)
+      .sort()
+      .map((relationId) => player.diplomacy.relations[relationId])
+      .reduce((top, relation) => Math.max(top, relation.score.rivalry + relation.score.fear * 0.5), 0);
+    const externalThreat = Math.max(player.diplomacy.coalitionThreat, strongestRival);
+
+    if (externalThreat > 0.55) {
+      explainers.push({
+        label: "Ameaça externa",
+        reason: "Rivais e coalizões estão aumentando o risco de guerra.",
+        suggestion: "Tente pacto/aliança com vizinhos e fortaleça postura defensiva.",
+        level: externalThreat > 0.75 ? "high" : "medium"
+      });
+    }
+
+    if (explainers.length === 0) {
+      explainers.push({
+        label: "Situação estável",
+        reason: "Nenhum risco sistêmico crítico no momento.",
+        suggestion: "Aproveite para acelerar tecnologia e desenvolvimento.",
+        level: "low"
+      });
+    }
+
+    ui.explainList.innerHTML = "";
+
+    for (const explainer of explainers) {
+      const item = document.createElement("li");
+      item.className = `explain-item risk-${explainer.level}`;
+      item.innerHTML = `<strong>${explainer.label}</strong><span>${explainer.reason}</span><small>Sugestão: ${explainer.suggestion}</small>`;
+      ui.explainList.appendChild(item);
+    }
+  }
+
   function renderRegionInfo(state: GameState): void {
     if (!selectedRegionId) {
       ui.regionInfo.textContent = "Selecione uma região no mapa.";
@@ -516,16 +638,88 @@ async function bootstrapApp(): Promise<void> {
     ui.budgetInputs.technology.value = String(round(player.economy.budgetPriority.technology));
   }
 
+  function renderTechnologyTree(choices: TechnologyChoice[]): void {
+    const nameById = new Map(choices.map((choice) => [choice.id, choice.name] as const));
+    ui.techTreeList.innerHTML = "";
+
+    for (const domain of TECH_DOMAIN_ORDER) {
+      const domainNodes = choices.filter((choice) => choice.domain === domain);
+      if (domainNodes.length === 0) {
+        continue;
+      }
+
+      const section = document.createElement("section");
+      section.className = "tech-domain-group";
+
+      const heading = document.createElement("h4");
+      heading.textContent = techDomainLabel(domain);
+      section.appendChild(heading);
+
+      const grid = document.createElement("div");
+      grid.className = "tech-node-grid";
+
+      for (const node of domainNodes) {
+        const nodeElement = document.createElement("article");
+        nodeElement.className = `tech-node tech-${node.status}`;
+        const requiredText = node.required.length === 0
+          ? "Sem pré-requisitos"
+          : node.required.map((requiredId) => nameById.get(requiredId) ?? requiredId).join(", ");
+
+        nodeElement.innerHTML = `
+          <header class="tech-node-header">
+            <strong>${node.name}</strong>
+            <span class="tech-status">${techStatusLabel(node.status)}</span>
+          </header>
+          <div class="tech-node-meta">
+            <span>Pesquisa necessária: ${formatNumber(node.cost)}</span>
+            <span>Pré-requisitos: ${requiredText}</span>
+          </div>
+        `;
+
+        const action = document.createElement("button");
+        action.className = "tech-action-btn";
+
+        if (node.status === "available") {
+          action.textContent = "Pesquisar";
+          action.addEventListener("click", () => {
+            const result = session.setResearchTarget(node.id);
+            showToast(result.message);
+          });
+        } else if (node.status === "active") {
+          action.textContent = "Pesquisa ativa";
+          action.disabled = true;
+        } else if (node.status === "unlocked") {
+          action.textContent = "Concluída";
+          action.disabled = true;
+        } else {
+          action.textContent = "Bloqueada";
+          action.disabled = true;
+        }
+
+        nodeElement.appendChild(action);
+        grid.appendChild(nodeElement);
+      }
+
+      section.appendChild(grid);
+      ui.techTreeList.appendChild(section);
+    }
+  }
+
   function renderTechnology(state: GameState): void {
     const player = getPlayerKingdom(state);
+    const choices = session.listTechnologyChoices();
+    const activeChoice = choices.find((choice) => choice.id === player.technology.activeResearchId);
+
     ui.techFocusSelect.value = player.technology.researchFocus;
 
     ui.techSummary.innerHTML = `
-      <span>Pesquisa ativa</span><strong>${player.technology.activeResearchId ?? "-"}</strong>
+      <span>Pesquisa ativa</span><strong>${activeChoice?.name ?? "-"}</strong>
       <span>Acúmulo</span><strong>${formatNumber(player.technology.accumulatedResearch)}</strong>
       <span>Taxa</span><strong>${formatNumber(player.technology.researchRate)}</strong>
       <span>Tecnologias desbloqueadas</span><strong>${player.technology.unlocked.length}</strong>
     `;
+
+    renderTechnologyTree(choices);
   }
 
   function createDiplomacyActionButton(targetId: string, actionType: DiplomaticActionType, label: string): HTMLButtonElement {
@@ -704,6 +898,7 @@ async function bootstrapApp(): Promise<void> {
     renderHeader(state);
     renderResources(state);
     renderRiskIndicators(state);
+    renderExplainers(state);
     renderRegionInfo(state);
     renderGovernmentInputs(state);
     renderTechnology(state);

@@ -8,6 +8,7 @@ import type {
   SaveSummary,
   SnapshotRepository
 } from "../core/contracts/game-ports";
+import { getTechnologyNode, isTechnologyAvailable, listAvailableTechnologyNodes, listTechnologyNodes, selectDefaultResearchNode } from "../core/data/technology-tree";
 import { DiplomaticRelation, ResourceType, TechnologyDomain, TreatyType } from "../core/models/enums";
 import type { BudgetPriority, TaxPolicy } from "../core/models/economy";
 import type { ClockService, DiplomacyResolver, EventBus, WarResolver } from "../core/contracts/services";
@@ -46,6 +47,15 @@ export interface PlayerActionResult {
   message: string;
   chance?: number;
   cooldownUntil?: number;
+}
+
+export interface TechnologyChoice {
+  id: string;
+  name: string;
+  domain: TechnologyDomain;
+  cost: number;
+  required: string[];
+  status: "unlocked" | "available" | "locked" | "active";
 }
 
 export class GameSession {
@@ -231,12 +241,67 @@ export class GameSession {
     const state = this.requireState();
     const player = this.getPlayerKingdom(state);
     player.technology.researchFocus = focus;
-    player.technology.activeResearchId = `tech_${focus}_${player.id}_t${Math.floor(state.meta.tick / 20) + 1}`;
+    const preferred = selectDefaultResearchNode(player.technology, focus);
+    player.technology.activeResearchId = preferred?.id ?? null;
 
     this.appendActionLog("Foco de pesquisa alterado", `A coroa direcionou os estudiosos para ${focus}.`, "info");
     this.recordPlayerCommand("technology.focus", { focus });
     this.persistCurrent();
     this.emitState();
+  }
+
+  setResearchTarget(technologyId: string): PlayerActionResult {
+    const state = this.requireState();
+    const player = this.getPlayerKingdom(state);
+    const node = getTechnologyNode(technologyId);
+
+    if (!node) {
+      return { ok: false, message: "Tecnologia inválida." };
+    }
+
+    if (!isTechnologyAvailable(player.technology, technologyId)) {
+      return { ok: false, message: "Tecnologia indisponível: faltam pré-requisitos ou já foi concluída." };
+    }
+
+    player.technology.researchFocus = node.domain;
+    player.technology.activeResearchId = technologyId;
+    this.appendActionLog("Pesquisa priorizada", `Os estudiosos agora pesquisam ${node.name}.`, "info");
+    this.recordPlayerCommand("technology.target", { technologyId, domain: node.domain });
+    this.persistCurrent();
+    this.emitState();
+
+    return { ok: true, message: `${node.name} definida como pesquisa ativa.` };
+  }
+
+  listTechnologyChoices(): TechnologyChoice[] {
+    const state = this.requireState();
+    const player = this.getPlayerKingdom(state);
+    const availableIds = new Set(listAvailableTechnologyNodes(player.technology).map((node) => node.id));
+    const unlockedIds = new Set(player.technology.unlocked);
+    const activeId = player.technology.activeResearchId;
+
+    return listTechnologyNodes().map((node) => {
+      let status: TechnologyChoice["status"] = "locked";
+
+      if (unlockedIds.has(node.id)) {
+        status = "unlocked";
+      } else if (availableIds.has(node.id)) {
+        status = "available";
+      }
+
+      if (activeId === node.id) {
+        status = "active";
+      }
+
+      return {
+        id: node.id,
+        name: node.name,
+        domain: node.domain,
+        cost: node.cost,
+        required: node.required,
+        status
+      };
+    });
   }
 
   executeDiplomaticAction(targetKingdomId: string, actionType: DiplomaticActionType): PlayerActionResult {

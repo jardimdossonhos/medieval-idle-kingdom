@@ -272,6 +272,15 @@ p {
   gap: 5px;
 }
 
+.explain-list {
+  margin-top: 8px;
+}
+
+.explain-item {
+  display: grid;
+  gap: 4px;
+}
+
 .list li {
   border: 1px solid rgb(133 106 70 / 0.6);
   border-radius: 8px;
@@ -313,6 +322,81 @@ p {
 
 .diplomacy-actions {
   grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.tech-tree-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.tech-domain-group {
+  border: 1px solid rgb(133 106 70 / 0.55);
+  border-radius: 9px;
+  padding: 9px;
+  background: rgb(255 255 255 / 0.3);
+}
+
+.tech-domain-group h4 {
+  margin: 0 0 8px;
+  color: var(--accent-soft);
+}
+
+.tech-node-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.tech-node {
+  border: 1px solid rgb(133 106 70 / 0.55);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgb(255 255 255 / 0.34);
+  display: grid;
+  gap: 8px;
+}
+
+.tech-node-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.tech-status {
+  font-size: 0.8rem;
+  border: 1px solid rgb(133 106 70 / 0.55);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgb(255 255 255 / 0.45);
+}
+
+.tech-node-meta {
+  display: grid;
+  gap: 3px;
+  font-size: 0.85rem;
+}
+
+.tech-action-btn {
+  width: 100%;
+}
+
+.tech-active {
+  border-color: rgb(47 98 66 / 0.6);
+}
+
+.tech-available {
+  border-color: rgb(176 110 30 / 0.7);
+}
+
+.tech-unlocked {
+  border-color: rgb(95 111 126 / 0.6);
+  opacity: 0.93;
+}
+
+.tech-locked {
+  opacity: 0.78;
 }
 
 .save-list {

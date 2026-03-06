@@ -184,4 +184,36 @@ describe("GameSession player actions", () => {
     expect(second.ok).toBe(false);
     expect(second.cooldownUntil).toBeDefined();
   });
+
+  it("lists technology choices and allows targeting available research", async () => {
+    const initial = createInitialState();
+
+    const session = new GameSession({
+      gameStateRepository: new InMemoryGameStateRepository(),
+      saveRepository: new InMemorySaveRepository(),
+      commandLogRepository: new NoopCommandLogRepository(),
+      snapshotRepository: new NoopSnapshotRepository(),
+      clock: new FakeClock(initial.meta.createdAt + 3_000),
+      eventBus: new InMemoryEventBus(),
+      systems: []
+    });
+
+    await session.bootstrap(initial);
+
+    const choices = session.listTechnologyChoices();
+    const active = choices.find((choice) => choice.id === "ledger_admin");
+    const available = choices.find((choice) => choice.id === "trade_charters");
+    const locked = choices.find((choice) => choice.id === "siege_engineering");
+
+    expect(active?.status).toBe("active");
+    expect(available?.status).toBe("available");
+    expect(locked?.status).toBe("locked");
+
+    const success = session.setResearchTarget("trade_charters");
+    const failure = session.setResearchTarget("siege_engineering");
+
+    expect(success.ok).toBe(true);
+    expect(session.getState().kingdoms.k_player.technology.activeResearchId).toBe("trade_charters");
+    expect(failure.ok).toBe(false);
+  });
 });

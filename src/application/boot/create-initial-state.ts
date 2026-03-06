@@ -368,10 +368,6 @@ export function createInitialState(): GameState {
     region.actionCooldowns = region.actionCooldowns ?? {};
   }
 
-  state.kingdoms.k_player.technology.unlocked.push(
-    `domain_${TechnologyDomain.Administration}_tier_1`
-  );
-
   return state;
 }
 

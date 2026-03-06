@@ -1,4 +1,5 @@
 ﻿import { ArmyPosture, AutomationLevel, TechnologyDomain } from "../../models/enums";
+import { selectDefaultResearchNode } from "../../data/technology-tree";
 import type { BudgetPriority } from "../../models/economy";
 import type { GameState, KingdomState } from "../../models/game-state";
 import type { SimulationSystem } from "../tick-pipeline";
@@ -29,16 +30,20 @@ function applyBudgetTarget(current: BudgetPriority, target: BudgetPriority, stre
 }
 
 function activeWarCount(state: GameState, kingdomId: string): number {
-  return Object.values(state.wars).filter(
-    (war) => war.attackers.includes(kingdomId) || war.defenders.includes(kingdomId)
-  ).length;
+  return Object.keys(state.wars)
+    .sort()
+    .map((warId) => state.wars[warId])
+    .filter((war) => war.attackers.includes(kingdomId) || war.defenders.includes(kingdomId)).length;
 }
 
 function computeThreat(kingdom: KingdomState): number {
-  const relationThreat = Object.values(kingdom.diplomacy.relations).reduce((top, relation) => {
-    const current = relation.score.rivalry * 0.6 + relation.score.fear * 0.2 + relation.grievance * 0.2;
-    return Math.max(top, current);
-  }, 0);
+  const relationThreat = Object.keys(kingdom.diplomacy.relations)
+    .sort()
+    .map((relationId) => kingdom.diplomacy.relations[relationId])
+    .reduce((top, relation) => {
+      const current = relation.score.rivalry * 0.6 + relation.score.fear * 0.2 + relation.grievance * 0.2;
+      return Math.max(top, current);
+    }, 0);
 
   return clamp(Math.max(kingdom.diplomacy.coalitionThreat, relationThreat), 0, 1);
 }
@@ -98,7 +103,8 @@ export function createAutomationSystem(): SimulationSystem {
     run(context): void {
       const state = context.nextState;
 
-      for (const kingdom of Object.values(state.kingdoms)) {
+      for (const kingdomId of Object.keys(state.kingdoms).sort()) {
+        const kingdom = state.kingdoms[kingdomId];
         const warCount = activeWarCount(state, kingdom.id);
         const threat = computeThreat(kingdom);
 
@@ -141,8 +147,7 @@ export function createAutomationSystem(): SimulationSystem {
             };
           }
 
-          const automationStrength =
-            kingdom.administration.automation.economy === AutomationLevel.NearlyAutomatic ? 0.35 : 0.2;
+          const automationStrength = kingdom.administration.automation.economy === AutomationLevel.NearlyAutomatic ? 0.35 : 0.2;
 
           kingdom.economy.budgetPriority = applyBudgetTarget(kingdom.economy.budgetPriority, targetBudget, automationStrength);
         }
@@ -173,8 +178,8 @@ export function createAutomationSystem(): SimulationSystem {
           kingdom.technology.researchFocus = domain;
 
           if (kingdom.technology.activeResearchId === null || state.meta.tick % 28 === 0) {
-            const tier = 1 + Math.floor(Math.max(0, kingdom.technology.unlocked.length - 2) / 4);
-            kingdom.technology.activeResearchId = `domain_${domain}_tier_${tier}`;
+            const target = selectDefaultResearchNode(kingdom.technology, domain);
+            kingdom.technology.activeResearchId = target?.id ?? null;
           }
 
           const rateBoost = kingdom.administration.automation.technology === AutomationLevel.NearlyAutomatic ? 0.03 : 0.015;
@@ -182,7 +187,9 @@ export function createAutomationSystem(): SimulationSystem {
         }
 
         if (isEnabled(kingdom.administration.automation.diplomacyReactive) && threat > 0.7) {
-          for (const relation of Object.values(kingdom.diplomacy.relations)
+          for (const relation of Object.keys(kingdom.diplomacy.relations)
+            .sort()
+            .map((relationId) => kingdom.diplomacy.relations[relationId])
             .sort((left, right) => right.score.rivalry - left.score.rivalry)
             .slice(0, 2)) {
             relation.score.rivalry = roundTo(clamp(relation.score.rivalry - 0.02, 0, 1));
