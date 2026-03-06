@@ -6,7 +6,7 @@ import { TechnologyDomain, type ResourceType } from "./core/models/enums";
 import { createDefaultSimulationSystems } from "./core/simulation/create-default-systems";
 import type { SaveSummary } from "./core/contracts/game-ports";
 import type { GameState, KingdomState } from "./core/models/game-state";
-import type { MapLayerMode, MapSelection } from "./infrastructure/rendering/map-renderer";
+import type { MapLayerMode, MapRenderContext, MapSelection } from "./infrastructure/rendering/map-renderer";
 import { HybridMapRenderer } from "./infrastructure/rendering/hybrid-map-renderer";
 import { LocalDiplomacyResolver } from "./infrastructure/diplomacy/local-diplomacy-resolver";
 import { RuleBasedNpcDecisionService } from "./infrastructure/npc/rule-based-npc-decision-service";
@@ -848,6 +848,29 @@ async function bootstrapApp(): Promise<void> {
     }
   }
 
+  function buildMapRenderContext(state: GameState): MapRenderContext {
+    const contestedRegionIds = new Set<string>();
+
+    for (const warId of Object.keys(state.wars).sort()) {
+      const war = state.wars[warId];
+
+      for (const front of [...war.fronts].sort((left, right) => left.regionId.localeCompare(right.regionId))) {
+        contestedRegionIds.add(front.regionId);
+      }
+    }
+
+    for (const regionId of Object.keys(state.world.regions).sort()) {
+      const region = state.world.regions[regionId];
+      if (region.unrest > 0.62 || region.devastation > 0.35) {
+        contestedRegionIds.add(regionId);
+      }
+    }
+
+    return {
+      contestedRegionIds: Array.from(contestedRegionIds).sort()
+    };
+  }
+
   async function renderSaveSlots(): Promise<void> {
     const slots = await session.listSaveSlots();
     ui.saveList.innerHTML = "";
@@ -905,7 +928,7 @@ async function bootstrapApp(): Promise<void> {
     renderDiplomacy(state);
     renderMilitary(state);
     renderEventLog(state);
-    mapRenderer.render(state.world, state.kingdoms);
+    mapRenderer.render(state.world, state.kingdoms, buildMapRenderContext(state));
   }
 
   ui.tabButtons.forEach((button) => {
@@ -953,8 +976,9 @@ async function bootstrapApp(): Promise<void> {
 
   ui.mapLayerSelect.addEventListener("change", () => {
     const layer = ui.mapLayerSelect.value as MapLayerMode;
+    const state = session.getState();
     mapRenderer.setLayer(layer);
-    mapRenderer.render(session.getState().world, session.getState().kingdoms);
+    mapRenderer.render(state.world, state.kingdoms, buildMapRenderContext(state));
   });
 
   ui.governmentApplyButton.addEventListener("click", () => {

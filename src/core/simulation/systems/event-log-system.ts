@@ -74,10 +74,10 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
     }
     case "technology.completed": {
       const actor = kingdomName(state, event.actorKingdomId);
-      const technologyId = String(event.payload.technologyId ?? "pesquisa");
+      const technologyName = String(event.payload.technologyName ?? event.payload.technologyId ?? "pesquisa");
       return {
         title: "Pesquisa concluída",
-        details: `${actor} concluiu ${technologyId}.`,
+        details: `${actor} concluiu ${technologyName}.`,
         severity: "info",
         suggestedAction: "Mantenha foco de pesquisa coerente com sua estratégia atual."
       };

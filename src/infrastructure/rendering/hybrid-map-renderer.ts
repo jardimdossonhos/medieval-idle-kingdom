@@ -1,6 +1,6 @@
 ﻿import type { KingdomState } from "../../core/models/game-state";
 import type { WorldState } from "../../core/models/world";
-import type { GameMapRenderer, MapLayerMode, MapSelection } from "./map-renderer";
+import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 import { MapLibreWorldRenderer } from "./maplibre-world-renderer";
 import { PixiMapRenderer } from "./pixi-map-renderer";
 
@@ -24,8 +24,8 @@ export class HybridMapRenderer implements GameMapRenderer {
     }
   }
 
-  render(world: WorldState, kingdoms: Record<string, KingdomState>): void {
-    this.active.render(world, kingdoms);
+  render(world: WorldState, kingdoms: Record<string, KingdomState>, context?: MapRenderContext): void {
+    this.active.render(world, kingdoms, context);
   }
 
   setLayer(layer: MapLayerMode): void {

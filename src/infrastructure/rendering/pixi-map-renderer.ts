@@ -1,7 +1,7 @@
 ﻿import { Application, Container, Graphics, Text } from "pixi.js";
 import type { KingdomState } from "../../core/models/game-state";
 import type { RegionDefinition, WorldState } from "../../core/models/world";
-import type { GameMapRenderer, MapLayerMode, MapSelection } from "./map-renderer";
+import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 
 interface RegionNode {
   shape: Graphics;
@@ -45,7 +45,7 @@ export class PixiMapRenderer implements GameMapRenderer {
     this.mapLayer = layer;
   }
 
-  render(world: WorldState, kingdoms: Record<string, KingdomState>): void {
+  render(world: WorldState, kingdoms: Record<string, KingdomState>, context?: MapRenderContext): void {
     if (!this.app || !this.layerContainer) {
       return;
     }
@@ -53,6 +53,10 @@ export class PixiMapRenderer implements GameMapRenderer {
     if (this.regionNodes.size === 0) {
       this.drawRegions(world);
     }
+
+    const contestedRegionIds = context?.contestedRegionIds?.length
+      ? new Set(context.contestedRegionIds)
+      : null;
 
     for (const [regionId, regionState] of Object.entries(world.regions)) {
       const node = this.regionNodes.get(regionId);
@@ -69,7 +73,9 @@ export class PixiMapRenderer implements GameMapRenderer {
       }
 
       if (this.mapLayer === "war") {
-        fillColor = colorForWarPressure(regionState.devastation);
+        fillColor = colorForWarPressure(
+          contestedRegionIds?.has(regionId) ? 1 : regionState.devastation
+        );
       }
 
       redrawRegionShape(node.shape, world.definitions[regionId], fillColor, selected);

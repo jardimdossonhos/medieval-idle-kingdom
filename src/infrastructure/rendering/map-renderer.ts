@@ -8,9 +8,13 @@ export interface MapSelection {
   label?: string;
 }
 
+export interface MapRenderContext {
+  contestedRegionIds?: readonly string[];
+}
+
 export interface GameMapRenderer {
   mount(world: WorldState, kingdoms: Record<string, KingdomState>): Promise<void>;
-  render(world: WorldState, kingdoms: Record<string, KingdomState>): void;
+  render(world: WorldState, kingdoms: Record<string, KingdomState>, context?: MapRenderContext): void;
   setLayer(layer: MapLayerMode): void;
   destroy(): void;
 }

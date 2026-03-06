@@ -2,7 +2,7 @@
 import type { FeatureCollection, Geometry } from "geojson";
 import type { KingdomState } from "../../core/models/game-state";
 import type { WorldState } from "../../core/models/world";
-import type { GameMapRenderer, MapLayerMode, MapSelection } from "./map-renderer";
+import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 
 interface CountryFeatureProperties {
   regionId?: string;
@@ -86,16 +86,18 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
     this.applyLayerMode();
   }
 
-  render(world: WorldState, kingdoms: Record<string, KingdomState>): void {
+  render(world: WorldState, kingdoms: Record<string, KingdomState>, context?: MapRenderContext): void {
     if (!this.map || !this.geojson) {
       return;
     }
 
-    const contestedRegionIds = new Set(
-      Object.keys(world.regions)
-        .sort()
-        .filter((regionId) => world.regions[regionId].devastation > 0.22)
-    );
+    const contestedRegionIds = context?.contestedRegionIds?.length
+      ? new Set(context.contestedRegionIds)
+      : new Set(
+        Object.keys(world.regions)
+          .sort()
+          .filter((regionId) => world.regions[regionId].devastation > 0.22)
+      );
 
     for (const feature of this.geojson.features) {
       const regionId = feature.properties.regionId;
