@@ -129,12 +129,12 @@ export class RuleBasedNpcDecisionService implements INpcDecisionService {
 
       const canOpenWar =
         !alreadyOpenedWar &&
-        actorWarCount < 3 &&
+        actorWarCount < 2 &&
         actor.diplomacy.warExhaustion < 0.74 &&
         warCooldownUntil <= state.meta.lastUpdatedAt &&
         actor.stability > 37 &&
-        aggressionIndex > 0.5 &&
-        strengthRatio > 0.98;
+        aggressionIndex > 0.26 &&
+        strengthRatio > 0.8;
 
       if (
         canOpenWar &&

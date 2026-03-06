@@ -103,7 +103,7 @@ export function createNpcDecisionSystem(
             if (attacker && defender) {
               warRisk = warResolver.evaluateWarRisk(attacker, defender, context.nextState);
 
-              if (warRisk >= 0.52) {
+              if (warRisk >= 0.22) {
                 const beforeWarIds = new Set(Object.keys(context.nextState.wars).sort());
                 context.nextState = warResolver.declareWar(context.nextState, attacker.id, defender.id);
 

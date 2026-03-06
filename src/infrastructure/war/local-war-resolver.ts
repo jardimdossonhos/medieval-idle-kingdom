@@ -10,7 +10,7 @@ const PEACE_TREATY_DURATION_MS = 1000 * 60 * 28;
 const WAR_DECLARATION_COOLDOWN_MS = 1000 * 60 * 6;
 const WAR_TRUCE_COOLDOWN_MS = 1000 * 60 * 12;
 const WAR_COOLDOWN_KEY = "war:declaration";
-const CONQUEST_THRESHOLD = 54;
+const CONQUEST_THRESHOLD = 34;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -60,6 +60,19 @@ function participantPower(state: GameState, participants: KingdomId[]): number {
     const power = militaryPower(kingdom) * (1 + kingdom.military.militaryTechLevel * 0.1);
     return total + power;
   }, 0);
+}
+
+function activeWarCount(state: GameState, kingdomId: KingdomId): number {
+  let total = 0;
+
+  for (const warId of Object.keys(state.wars).sort()) {
+    const war = state.wars[warId];
+    if (war.attackers.includes(kingdomId) || war.defenders.includes(kingdomId)) {
+      total += 1;
+    }
+  }
+
+  return total;
 }
 
 function isAtWar(kingdomId: KingdomId, war: WarState): boolean {
@@ -331,6 +344,10 @@ export class LocalWarResolver implements WarResolver {
       return state;
     }
 
+    if (activeWarCount(state, attackerId) >= 2 || activeWarCount(state, defenderId) >= 2) {
+      return state;
+    }
+
     const now = state.meta.lastUpdatedAt;
     if (hasActivePeaceTreaty(state, attackerId, defenderId, now)) {
       return state;
@@ -396,6 +413,10 @@ export class LocalWarResolver implements WarResolver {
   }
 
   resolveTick(state: GameState, now: number): GameState {
+    if (state.meta.tick % 12 === 0) {
+      this.maybeOpenAutonomousWar(state);
+    }
+
     const warsToPeace: string[] = [];
 
     for (const warId of Object.keys(state.wars).sort()) {
@@ -410,7 +431,7 @@ export class LocalWarResolver implements WarResolver {
       }
 
       const pressureDelta = (attackerPower - defenderPower) / combinedPower;
-      war.warScore = roundTo(clamp(war.warScore + pressureDelta * 12, -100, 100));
+      war.warScore = roundTo(clamp(war.warScore + pressureDelta * 19, -100, 100));
 
       for (const front of [...war.fronts].sort((left, right) => left.regionId.localeCompare(right.regionId))) {
         front.pressureAttackers = roundTo(clamp(front.pressureAttackers + pressureDelta * 8, 0, 100));
@@ -441,10 +462,20 @@ export class LocalWarResolver implements WarResolver {
 
       if (war.warScore >= CONQUEST_THRESHOLD) {
         applyConquest(state, this.staticWorldData.definitions, war.attackers, war.defenders);
-        war.warScore = roundTo(clamp(war.warScore - 38, -100, 100));
+        war.warScore = roundTo(clamp(war.warScore - 24, -100, 100));
       } else if (war.warScore <= -CONQUEST_THRESHOLD) {
         applyConquest(state, this.staticWorldData.definitions, war.defenders, war.attackers);
-        war.warScore = roundTo(clamp(war.warScore + 38, -100, 100));
+        war.warScore = roundTo(clamp(war.warScore + 24, -100, 100));
+      }
+
+      if (ageTicks > 12 && state.meta.tick % 18 === 0) {
+        if (war.warScore >= 0) {
+          applyConquest(state, this.staticWorldData.definitions, war.attackers, war.defenders);
+          war.warScore = roundTo(clamp(war.warScore - 12, -100, 100));
+        } else {
+          applyConquest(state, this.staticWorldData.definitions, war.defenders, war.attackers);
+          war.warScore = roundTo(clamp(war.warScore + 12, -100, 100));
+        }
       }
 
       if ((ageTicks > 42 && Math.abs(war.warScore) < 12) || this.mustForcePeace(war, state)) {
@@ -463,5 +494,45 @@ export class LocalWarResolver implements WarResolver {
     const participants = [...war.attackers, ...war.defenders];
     const exhausted = participants.filter((id) => state.kingdoms[id]?.diplomacy.warExhaustion > 0.9).length;
     return exhausted >= participants.length;
+  }
+
+  private maybeOpenAutonomousWar(state: GameState): void {
+    const npcKingdomIds = Object.keys(state.kingdoms)
+      .sort()
+      .filter((kingdomId) => !state.kingdoms[kingdomId].isPlayer);
+    let bestCandidate: { attackerId: KingdomId; defenderId: KingdomId; risk: number } | null = null;
+
+    for (let index = 0; index < npcKingdomIds.length; index += 1) {
+      for (let inner = index + 1; inner < npcKingdomIds.length; inner += 1) {
+        const leftId = npcKingdomIds[index];
+        const rightId = npcKingdomIds[inner];
+        const left = state.kingdoms[leftId];
+        const right = state.kingdoms[rightId];
+
+        for (const [attacker, defender] of [
+          [left, right],
+          [right, left]
+        ] as const) {
+          const risk = this.evaluateWarRisk(attacker, defender, state);
+          if (risk < 0.2) {
+            continue;
+          }
+
+          if (!bestCandidate || risk > bestCandidate.risk) {
+            bestCandidate = {
+              attackerId: attacker.id,
+              defenderId: defender.id,
+              risk
+            };
+          }
+        }
+      }
+    }
+
+    if (!bestCandidate) {
+      return;
+    }
+
+    this.declareWar(state, bestCandidate.attackerId, bestCandidate.defenderId);
   }
 }
