@@ -170,6 +170,7 @@ export function createAutomationSystem(): SimulationSystem {
 
         if (isEnabled(kingdom.administration.automation.technology)) {
           const domain = selectResearchDomain(kingdom, threat, warCount);
+          kingdom.technology.researchFocus = domain;
 
           if (kingdom.technology.activeResearchId === null || state.meta.tick % 28 === 0) {
             const tier = 1 + Math.floor(Math.max(0, kingdom.technology.unlocked.length - 2) / 4);

@@ -12,7 +12,10 @@ export function roundTo(value: number, decimals = 2): number {
 }
 
 export function getPlayerKingdom(state: GameState): KingdomState {
-  const player = Object.values(state.kingdoms).find((kingdom) => kingdom.isPlayer);
+  const player = Object.keys(state.kingdoms)
+    .sort()
+    .map((kingdomId) => state.kingdoms[kingdomId])
+    .find((kingdom) => kingdom.isPlayer);
 
   if (!player) {
     throw new Error("No player kingdom found in game state.");
@@ -22,9 +25,9 @@ export function getPlayerKingdom(state: GameState): KingdomState {
 }
 
 export function getOwnedRegionIds(state: GameState, kingdomId: KingdomId): string[] {
-  return Object.values(state.world.regions)
-    .filter((region) => region.ownerId === kingdomId)
-    .map((region) => region.regionId);
+  return Object.keys(state.world.regions)
+    .sort()
+    .filter((regionId) => state.world.regions[regionId].ownerId === kingdomId);
 }
 
 export function ensureResourceNonNegative(kingdom: KingdomState): void {

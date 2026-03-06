@@ -1,5 +1,6 @@
 ﻿import type { SaveSnapshot } from "../../core/contracts/game-ports";
 import type { Treaty } from "../../core/models/diplomacy";
+import { TechnologyDomain } from "../../core/models/enums";
 import type { GameState } from "../../core/models/game-state";
 import { buildTreatyId, buildWarIdFromSides, sortUniqueIds } from "../../core/models/identifiers";
 import type { WarId } from "../../core/models/types";
@@ -104,6 +105,25 @@ function migrateStateToCurrent(state: GameState): GameState {
   const migrated = structuredClone(state);
   migrateWars(migrated);
   migrateTreaties(migrated);
+
+  for (const kingdom of Object.values(migrated.kingdoms)) {
+    if (!kingdom.technology.researchFocus) {
+      kingdom.technology.researchFocus = TechnologyDomain.Administration;
+    }
+
+    for (const relation of Object.values(kingdom.diplomacy.relations)) {
+      if (!relation.actionCooldowns) {
+        relation.actionCooldowns = {};
+      }
+    }
+  }
+
+  for (const region of Object.values(migrated.world.regions)) {
+    if (!region.actionCooldowns) {
+      region.actionCooldowns = {};
+    }
+  }
+
   migrated.meta.schemaVersion = SAVE_SCHEMA_VERSION;
   return migrated;
 }

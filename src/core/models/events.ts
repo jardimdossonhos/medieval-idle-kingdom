@@ -15,4 +15,9 @@ export interface EventLogEntry {
   details: string;
   severity: "info" | "warning" | "critical";
   occurredAt: TimestampMs;
+  groupKey?: string;
+  count?: number;
+  suggestedAction?: string;
+  actorKingdomId?: KingdomId;
+  targetKingdomId?: KingdomId;
 }

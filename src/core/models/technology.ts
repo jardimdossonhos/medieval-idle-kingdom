@@ -14,6 +14,7 @@ export interface TechnologyState {
   activeResearchId: string | null;
   accumulatedResearch: number;
   researchRate: number;
+  researchFocus: TechnologyDomain;
   doctrineMilitary: string;
   doctrineAdministration: string;
 }

@@ -1,8 +1,21 @@
 ﻿import { buildSaveSummary } from "./save/build-save-summary";
-import type { GameStateRepository, SaveRepository, SaveSlotId, SaveSnapshot, SaveSummary } from "../core/contracts/game-ports";
-import type { ClockService, EventBus } from "../core/contracts/services";
-import type { EventLogEntry } from "../core/models/events";
+import type {
+  CommandLogRepository,
+  GameStateRepository,
+  SaveRepository,
+  SaveSlotId,
+  SaveSnapshot,
+  SaveSummary,
+  SnapshotRepository
+} from "../core/contracts/game-ports";
+import { DiplomaticRelation, ResourceType, TechnologyDomain, TreatyType } from "../core/models/enums";
+import type { BudgetPriority, TaxPolicy } from "../core/models/economy";
+import type { ClockService, DiplomacyResolver, EventBus, WarResolver } from "../core/contracts/services";
+import type { CommandLogEntry, SnapshotReason, StateSnapshot } from "../core/models/commands";
+import type { DomainEvent, EventLogEntry } from "../core/models/events";
 import type { GameState } from "../core/models/game-state";
+import { buildTreatyId, sortUniqueIds } from "../core/models/identifiers";
+import { hashDeterministic } from "../core/utils/stable-hash";
 import { TickPipeline, type SimulationSystem } from "../core/simulation/tick-pipeline";
 import { createAutoSlotId, MANUAL_SLOT_ID, nextAutoSlot, SAFETY_SLOT_ID } from "../infrastructure/persistence/save-slots";
 
@@ -12,11 +25,28 @@ export interface GameSessionDeps {
   clock: ClockService;
   eventBus: EventBus;
   systems: SimulationSystem[];
+  diplomacyResolver?: DiplomacyResolver;
+  warResolver?: WarResolver;
+  commandLogRepository?: CommandLogRepository;
+  snapshotRepository?: SnapshotRepository;
   autosaveEveryTicks?: number;
   maxOfflineTicks?: number;
+  snapshotEveryTicks?: number;
+  maxSnapshots?: number;
 }
 
 type StateListener = (state: GameState) => void;
+
+export type DiplomaticActionType = "alliance" | "non_aggression" | "peace" | "tribute" | "embargo" | "war";
+
+export type RegionActionType = "invest_agriculture" | "invest_infrastructure" | "garrison" | "pacify";
+
+export interface PlayerActionResult {
+  ok: boolean;
+  message: string;
+  chance?: number;
+  cooldownUntil?: number;
+}
 
 export class GameSession {
   private readonly pipeline: TickPipeline;
@@ -24,17 +54,22 @@ export class GameSession {
   private currentState: GameState | null = null;
   private accumulatedMs = 0;
   private ticksSinceAutosave = 0;
+  private ticksSinceSnapshot = 0;
   private autoSlotIndex = 0;
   private ioQueue: Promise<void> = Promise.resolve();
   private sessionLogSeq = 0;
+  private commandSequence = 0;
+  private commandHeadHash = "genesis";
 
   constructor(private readonly deps: GameSessionDeps) {
     this.pipeline = new TickPipeline(deps.systems);
   }
 
   async bootstrap(initialState: GameState): Promise<GameState> {
+    await this.bootstrapCommandHead();
+
     const persisted = await this.deps.gameStateRepository.loadCurrent();
-    const recovered = persisted ?? (await this.restoreFromLatestSave());
+    const recovered = persisted ?? (await this.restoreFromSnapshotOrSave());
     const baseState = recovered ?? initialState;
     const now = this.deps.clock.now();
 
@@ -53,9 +88,23 @@ export class GameSession {
         ),
         ...this.currentState.events
       ].slice(0, 180);
+
+      this.recordSystemCommand("offline.progression", {
+        ticksApplied: offlineResult.ticks,
+        from: baseState.meta.lastClosedAt ?? baseState.meta.lastUpdatedAt,
+        to: now
+      });
     }
 
     await this.deps.gameStateRepository.saveCurrent(this.currentState);
+
+    if (this.deps.snapshotRepository) {
+      const latestSnapshot = await this.deps.snapshotRepository.latest();
+      if (!latestSnapshot) {
+        await this.deps.snapshotRepository.save(this.buildStateSnapshot("bootstrap", now));
+      }
+    }
+
     this.emitState();
     return this.currentState;
   }
@@ -73,7 +122,10 @@ export class GameSession {
       return;
     }
 
-    this.currentState.meta.lastClosedAt = this.deps.clock.now();
+    const now = this.deps.clock.now();
+    this.currentState.meta.lastClosedAt = now;
+    this.recordSystemCommand("session.stop", { reason: "manual_stop" }, now);
+
     this.enqueueIo(async () => {
       if (this.currentState) {
         await this.deps.gameStateRepository.saveCurrent(this.currentState);
@@ -96,6 +148,7 @@ export class GameSession {
   setPaused(paused: boolean): void {
     const state = this.requireState();
     state.meta.paused = paused;
+    this.recordPlayerCommand("session.pause", { paused });
     this.persistCurrent();
     this.emitState();
   }
@@ -108,13 +161,255 @@ export class GameSession {
   setSpeed(multiplier: number): void {
     const state = this.requireState();
     state.meta.speedMultiplier = Math.max(0.5, Math.min(8, multiplier));
+    this.recordPlayerCommand("session.speed", { speedMultiplier: state.meta.speedMultiplier });
     this.persistCurrent();
     this.emitState();
   }
 
+  updateTaxPolicy(patch: Partial<TaxPolicy>): void {
+    const state = this.requireState();
+    const player = this.getPlayerKingdom(state);
+    const policy = player.economy.taxPolicy;
+
+    if (typeof patch.baseRate === "number") {
+      policy.baseRate = this.clamp(patch.baseRate, 0.05, 0.6);
+    }
+
+    if (typeof patch.nobleRelief === "number") {
+      policy.nobleRelief = this.clamp(patch.nobleRelief, 0, 0.4);
+    }
+
+    if (typeof patch.clergyExemption === "number") {
+      policy.clergyExemption = this.clamp(patch.clergyExemption, 0, 0.4);
+    }
+
+    if (typeof patch.tariffRate === "number") {
+      policy.tariffRate = this.clamp(patch.tariffRate, 0, 0.5);
+    }
+
+    this.appendActionLog("Política fiscal ajustada", "As diretrizes tributárias foram atualizadas pelo conselho real.", "info");
+    this.recordPlayerCommand("government.tax_policy", policy as unknown as Record<string, unknown>);
+    this.persistCurrent();
+    this.emitState();
+  }
+
+  updateBudgetPriority(patch: Partial<BudgetPriority>): void {
+    const state = this.requireState();
+    const player = this.getPlayerKingdom(state);
+    const budget = player.economy.budgetPriority;
+
+    if (typeof patch.economy === "number") {
+      budget.economy = Math.max(0, patch.economy);
+    }
+    if (typeof patch.military === "number") {
+      budget.military = Math.max(0, patch.military);
+    }
+    if (typeof patch.religion === "number") {
+      budget.religion = Math.max(0, patch.religion);
+    }
+    if (typeof patch.administration === "number") {
+      budget.administration = Math.max(0, patch.administration);
+    }
+    if (typeof patch.technology === "number") {
+      budget.technology = Math.max(0, patch.technology);
+    }
+
+    const total = Math.max(1, budget.economy + budget.military + budget.religion + budget.administration + budget.technology);
+    budget.economy = this.round((budget.economy / total) * 100);
+    budget.military = this.round((budget.military / total) * 100);
+    budget.religion = this.round((budget.religion / total) * 100);
+    budget.administration = this.round((budget.administration / total) * 100);
+    budget.technology = this.round((budget.technology / total) * 100);
+
+    this.appendActionLog("Orçamento revisado", "As prioridades de investimento do reino foram redistribuídas.", "info");
+    this.recordPlayerCommand("government.budget_priority", budget as unknown as Record<string, unknown>);
+    this.persistCurrent();
+    this.emitState();
+  }
+
+  setResearchFocus(focus: TechnologyDomain): void {
+    const state = this.requireState();
+    const player = this.getPlayerKingdom(state);
+    player.technology.researchFocus = focus;
+    player.technology.activeResearchId = `tech_${focus}_${player.id}_t${Math.floor(state.meta.tick / 20) + 1}`;
+
+    this.appendActionLog("Foco de pesquisa alterado", `A coroa direcionou os estudiosos para ${focus}.`, "info");
+    this.recordPlayerCommand("technology.focus", { focus });
+    this.persistCurrent();
+    this.emitState();
+  }
+
+  executeDiplomaticAction(targetKingdomId: string, actionType: DiplomaticActionType): PlayerActionResult {
+    let state = this.requireState();
+    const now = this.deps.clock.now();
+    const player = this.getPlayerKingdom(state);
+    const target = state.kingdoms[targetKingdomId];
+
+    if (!target || target.id === player.id) {
+      return { ok: false, message: "Alvo diplomático inválido." };
+    }
+
+    const relation = player.diplomacy.relations[target.id];
+    if (!relation) {
+      return { ok: false, message: "Relação diplomática inexistente para o alvo." };
+    }
+    relation.actionCooldowns = relation.actionCooldowns ?? {};
+
+    const cooldownKey = `diplomacy:${actionType}`;
+    const cooldownUntil = relation.actionCooldowns[cooldownKey] ?? 0;
+    if (cooldownUntil > now) {
+      return { ok: false, message: "Ação em cooldown diplomático.", cooldownUntil };
+    }
+
+    const { cost, chance, cooldownMs, actionPt } = this.getDiplomaticConfig(state, player.id, target.id, actionType);
+
+    if (!this.canAfford(player.economy.stock, cost)) {
+      return { ok: false, message: "Recursos insuficientes para executar esta ação." };
+    }
+
+    this.applyCost(player.economy.stock, cost);
+    const roll = this.nextRandom(state);
+    const success = roll <= chance;
+
+    relation.actionCooldowns[cooldownKey] = now + cooldownMs;
+    const reverse = target.diplomacy.relations[player.id];
+    if (reverse) {
+      reverse.actionCooldowns = reverse.actionCooldowns ?? {};
+      reverse.actionCooldowns[cooldownKey] = now + cooldownMs;
+    }
+
+    if (success) {
+      if (this.deps.diplomacyResolver) {
+        state = this.deps.diplomacyResolver.applyDecision(state, {
+          actorKingdomId: player.id,
+          actionType: actionPt,
+          priority: chance,
+          targetKingdomId: target.id,
+          payload: { source: "player_ui" }
+        });
+      }
+
+      if (actionType === "peace") {
+        this.resolvePlayerPeace(state, player.id, target.id);
+      }
+
+      if (actionType === "war") {
+        if (this.deps.warResolver) {
+          state = this.deps.warResolver.declareWar(state, player.id, target.id);
+        }
+      }
+
+      if (actionType === "tribute") {
+        const tribute = this.round(target.economy.stock.gold * 0.08);
+        target.economy.stock.gold = Math.max(0, target.economy.stock.gold - tribute);
+        player.economy.stock.gold = this.round(player.economy.stock.gold + tribute);
+      }
+
+      this.appendActionLog(
+        "Ação diplomática bem-sucedida",
+        `${player.name} executou ${actionType} com ${target.name}.`,
+        actionType === "war" ? "critical" : "info"
+      );
+    } else {
+      player.stability = this.round(this.clamp(player.stability - 0.4, 0, 100));
+      this.appendActionLog(
+        "Ação diplomática recusada",
+        `${target.name} rejeitou ${actionType}.`,
+        "warning"
+      );
+    }
+
+    this.recordPlayerCommand("diplomacy.action", {
+      targetKingdomId,
+      actionType,
+      chance: this.round(chance, 4),
+      roll: this.round(roll, 4),
+      success
+    });
+    this.persistCurrent();
+    this.emitState();
+
+    return {
+      ok: success,
+      message: success ? "Ação executada com sucesso." : "Ação falhou na negociação.",
+      chance: this.round(chance, 4),
+      cooldownUntil: now + cooldownMs
+    };
+  }
+
+  executeRegionAction(regionId: string, actionType: RegionActionType): PlayerActionResult {
+    const state = this.requireState();
+    const now = this.deps.clock.now();
+    const player = this.getPlayerKingdom(state);
+    const region = state.world.regions[regionId];
+    const regionDef = state.world.definitions[regionId];
+
+    if (!region || !regionDef) {
+      return { ok: false, message: "Região inválida." };
+    }
+
+    if (region.ownerId !== player.id) {
+      return { ok: false, message: "Você só pode administrar regiões próprias." };
+    }
+
+    region.actionCooldowns = region.actionCooldowns ?? {};
+    const cooldownUntil = region.actionCooldowns[actionType] ?? 0;
+    if (cooldownUntil > now) {
+      return { ok: false, message: "Ação em cooldown regional.", cooldownUntil };
+    }
+
+    const config = this.getRegionActionConfig(actionType);
+    if (!this.canAfford(player.economy.stock, config.cost)) {
+      return { ok: false, message: "Recursos insuficientes para esta ação regional." };
+    }
+
+    this.applyCost(player.economy.stock, config.cost);
+    region.actionCooldowns[actionType] = now + config.cooldownMs;
+
+    switch (actionType) {
+      case "invest_agriculture":
+        region.devastation = this.round(this.clamp(region.devastation - 0.08, 0, 1));
+        region.unrest = this.round(this.clamp(region.unrest - 0.05, 0, 1));
+        player.economy.stock.food = this.round(player.economy.stock.food + 40 + regionDef.economyValue * 2);
+        break;
+      case "invest_infrastructure":
+        region.autonomy = this.round(this.clamp(region.autonomy - 0.05, 0, 1));
+        region.assimilation = this.round(this.clamp(region.assimilation + 0.04, 0, 1));
+        region.devastation = this.round(this.clamp(region.devastation - 0.04, 0, 1));
+        break;
+      case "garrison":
+        region.unrest = this.round(this.clamp(region.unrest - 0.08, 0, 1));
+        region.autonomy = this.round(this.clamp(region.autonomy - 0.03, 0, 1));
+        player.military.reserveManpower = Math.max(0, player.military.reserveManpower - 300);
+        if (player.military.armies.length > 0) {
+          player.military.armies[0].manpower += 300;
+        }
+        break;
+      case "pacify":
+        region.unrest = this.round(this.clamp(region.unrest - 0.14, 0, 1));
+        region.assimilation = this.round(this.clamp(region.assimilation + 0.03, 0, 1));
+        region.autonomy = this.round(this.clamp(region.autonomy + 0.02, 0, 1));
+        player.stability = this.round(this.clamp(player.stability + 0.8, 0, 100));
+        break;
+    }
+
+    this.appendActionLog("Ação regional executada", `${config.label} aplicada em ${regionDef.name}.`, "info");
+    this.recordPlayerCommand("region.action", { regionId, actionType });
+    this.persistCurrent();
+    this.emitState();
+
+    return {
+      ok: true,
+      message: `${config.label} aplicada.`,
+      cooldownUntil: now + config.cooldownMs
+    };
+  }
+
   async saveManual(): Promise<void> {
-    const snapshot = this.buildSnapshot(MANUAL_SLOT_ID);
+    const snapshot = this.buildSaveSlotSnapshot(MANUAL_SLOT_ID);
     await this.deps.saveRepository.saveToSlot(snapshot);
+    this.recordPlayerCommand("save.manual", { slotId: MANUAL_SLOT_ID });
+    this.captureSnapshot("manual");
   }
 
   async saveSafety(reason: string): Promise<void> {
@@ -124,9 +419,11 @@ export class GameSession {
       ...state.events
     ].slice(0, 180);
 
-    const snapshot = this.buildSnapshot(SAFETY_SLOT_ID);
+    const snapshot = this.buildSaveSlotSnapshot(SAFETY_SLOT_ID);
     await this.deps.saveRepository.saveToSlot(snapshot);
     await this.deps.gameStateRepository.saveCurrent(state);
+    this.recordPlayerCommand("save.safety", { slotId: SAFETY_SLOT_ID, reason });
+    this.captureSnapshot("safety");
     this.emitState();
   }
 
@@ -146,12 +443,250 @@ export class GameSession {
     this.currentState.meta.paused = false;
 
     await this.deps.gameStateRepository.saveCurrent(this.currentState);
+    this.recordPlayerCommand("save.load_slot", { slotId });
+    this.captureSnapshot("bootstrap");
     this.emitState();
     return this.currentState;
   }
 
   getState(): GameState {
     return this.requireState();
+  }
+
+  async flushPersistence(): Promise<void> {
+    await this.ioQueue;
+  }
+
+  private getPlayerKingdom(state: GameState): GameState["kingdoms"][string] {
+    const player = Object.keys(state.kingdoms)
+      .sort()
+      .map((kingdomId) => state.kingdoms[kingdomId])
+      .find((kingdom) => kingdom.isPlayer);
+
+    if (!player) {
+      throw new Error("Reino do jogador não encontrado.");
+    }
+
+    return player;
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  private round(value: number, decimals = 2): number {
+    const factor = 10 ** decimals;
+    return Math.round(value * factor) / factor;
+  }
+
+  private nextRandom(state: GameState): number {
+    state.randomSeed = (Math.imul(state.randomSeed, 1664525) + 1013904223) >>> 0;
+    return state.randomSeed / 0x100000000;
+  }
+
+  private canAfford(stock: Record<ResourceType, number>, cost: Partial<Record<ResourceType, number>>): boolean {
+    return Object.entries(cost).every(([resource, value]) => {
+      const key = resource as ResourceType;
+      const required = value ?? 0;
+      return stock[key] >= required;
+    });
+  }
+
+  private applyCost(stock: Record<ResourceType, number>, cost: Partial<Record<ResourceType, number>>): void {
+    for (const [resource, value] of Object.entries(cost)) {
+      const key = resource as ResourceType;
+      const required = value ?? 0;
+      stock[key] = this.round(Math.max(0, stock[key] - required));
+    }
+  }
+
+  private appendActionLog(title: string, details: string, severity: EventLogEntry["severity"]): void {
+    const state = this.requireState();
+    const entry = this.createSessionLog(title, details, severity, this.deps.clock.now());
+    state.events = [entry, ...state.events].slice(0, 180);
+  }
+
+  private getDiplomaticConfig(
+    state: GameState,
+    playerId: string,
+    targetId: string,
+    actionType: DiplomaticActionType
+  ): {
+    cost: Partial<Record<ResourceType, number>>;
+    chance: number;
+    cooldownMs: number;
+    actionPt: string;
+  } {
+    const relation = state.kingdoms[playerId].diplomacy.relations[targetId];
+    const trust = relation?.score.trust ?? 0.3;
+    const rivalry = relation?.score.rivalry ?? 0.3;
+    const fear = relation?.score.fear ?? 0.2;
+    const grievance = relation?.grievance ?? 0.2;
+
+    const base = {
+      cost: {} as Partial<Record<ResourceType, number>>,
+      chance: 0.55,
+      cooldownMs: 45_000,
+      actionPt: "oferta_alianca"
+    };
+
+    switch (actionType) {
+      case "alliance":
+        base.cost = {
+          [ResourceType.Gold]: 18,
+          [ResourceType.Legitimacy]: 4
+        };
+        base.chance = this.clamp(0.2 + trust * 0.55 + (1 - rivalry) * 0.25, 0.08, 0.9);
+        base.cooldownMs = 90_000;
+        base.actionPt = "oferta_alianca";
+        break;
+      case "non_aggression":
+        base.cost = {
+          [ResourceType.Gold]: 12,
+          [ResourceType.Legitimacy]: 2
+        };
+        base.chance = this.clamp(0.25 + trust * 0.45 + (1 - grievance) * 0.2, 0.1, 0.92);
+        base.cooldownMs = 75_000;
+        base.actionPt = "pacto_nao_agressao";
+        break;
+      case "peace":
+        base.cost = {
+          [ResourceType.Gold]: 20
+        };
+        base.chance = this.clamp(0.3 + fear * 0.25 + trust * 0.2 + grievance * 0.15, 0.15, 0.92);
+        base.cooldownMs = 55_000;
+        base.actionPt = "proposta_paz";
+        break;
+      case "tribute":
+        base.cost = {
+          [ResourceType.Legitimacy]: 3,
+          [ResourceType.Gold]: 10
+        };
+        base.chance = this.clamp(0.2 + fear * 0.55 + (1 - trust) * 0.2, 0.06, 0.85);
+        base.cooldownMs = 80_000;
+        base.actionPt = "exigir_tributo";
+        break;
+      case "embargo":
+        base.cost = {
+          [ResourceType.Gold]: 14
+        };
+        base.chance = this.clamp(0.28 + rivalry * 0.35 + (1 - trust) * 0.2, 0.12, 0.88);
+        base.cooldownMs = 65_000;
+        base.actionPt = "embargo_comercial";
+        break;
+      case "war": {
+        const attacker = state.kingdoms[playerId];
+        const defender = state.kingdoms[targetId];
+        const risk = this.deps.warResolver ? this.deps.warResolver.evaluateWarRisk(attacker, defender, state) : 0.45;
+        base.cost = {
+          [ResourceType.Gold]: 35,
+          [ResourceType.Food]: 50,
+          [ResourceType.Iron]: 18,
+          [ResourceType.Legitimacy]: 5
+        };
+        base.chance = this.clamp(0.18 + risk * 0.7 + rivalry * 0.08, 0.08, 0.95);
+        base.cooldownMs = 95_000;
+        base.actionPt = "declarar_guerra";
+        break;
+      }
+    }
+
+    return base;
+  }
+
+  private resolvePlayerPeace(state: GameState, leftId: string, rightId: string): void {
+    const warIds = Object.keys(state.wars)
+      .sort()
+      .filter((warId) => {
+        const war = state.wars[warId];
+        const leftInWar = war.attackers.includes(leftId) || war.defenders.includes(leftId);
+        const rightInWar = war.attackers.includes(rightId) || war.defenders.includes(rightId);
+        return leftInWar && rightInWar;
+      });
+
+    if (warIds.length === 0) {
+      return;
+    }
+
+    for (const warId of warIds) {
+      if (this.deps.warResolver) {
+        this.deps.warResolver.enforcePeace(state, warId);
+        continue;
+      }
+
+      delete state.wars[warId];
+      const leftRelation = state.kingdoms[leftId].diplomacy.relations[rightId];
+      const rightRelation = state.kingdoms[rightId].diplomacy.relations[leftId];
+
+      if (leftRelation) {
+        leftRelation.status = DiplomaticRelation.Truce;
+      }
+      if (rightRelation) {
+        rightRelation.status = DiplomaticRelation.Truce;
+      }
+
+      const signedAt = state.meta.lastUpdatedAt;
+      const parties = sortUniqueIds([leftId, rightId]);
+      const treaty = {
+        id: buildTreatyId(TreatyType.Peace, parties, signedAt),
+        type: TreatyType.Peace,
+        parties,
+        signedAt,
+        expiresAt: signedAt + 60_000,
+        terms: { borderFreeze: true }
+      };
+
+      state.kingdoms[leftId].diplomacy.treaties.push(treaty);
+      state.kingdoms[rightId].diplomacy.treaties.push(treaty);
+    }
+  }
+
+  private getRegionActionConfig(actionType: RegionActionType): {
+    label: string;
+    cooldownMs: number;
+    cost: Partial<Record<ResourceType, number>>;
+  } {
+    switch (actionType) {
+      case "invest_agriculture":
+        return {
+          label: "Investimento em agricultura",
+          cooldownMs: 42_000,
+          cost: {
+            [ResourceType.Gold]: 28,
+            [ResourceType.Wood]: 22
+          }
+        };
+      case "invest_infrastructure":
+        return {
+          label: "Investimento em infraestrutura",
+          cooldownMs: 50_000,
+          cost: {
+            [ResourceType.Gold]: 40,
+            [ResourceType.Wood]: 30,
+            [ResourceType.Iron]: 10
+          }
+        };
+      case "garrison":
+        return {
+          label: "Reforço de guarnição",
+          cooldownMs: 35_000,
+          cost: {
+            [ResourceType.Gold]: 35,
+            [ResourceType.Food]: 20,
+            [ResourceType.Iron]: 18
+          }
+        };
+      case "pacify":
+        return {
+          label: "Pacificação administrativa",
+          cooldownMs: 40_000,
+          cost: {
+            [ResourceType.Gold]: 24,
+            [ResourceType.Faith]: 16,
+            [ResourceType.Legitimacy]: 3
+          }
+        };
+    }
   }
 
   private onClockTick(deltaMs: number, now: number): void {
@@ -179,21 +714,30 @@ export class GameSession {
         break;
       }
 
-      // Advance simulated time deterministically even if multiple ticks are processed in a single clock callback.
       simNow = Math.max(simNow, current.meta.lastUpdatedAt) + tickDurationMs;
 
+      const previousTick = current.meta.tick;
       const result = this.pipeline.run(current, tickDurationMs, simNow);
       this.currentState = result.state;
       progressed = true;
       this.ticksSinceAutosave += 1;
+      this.ticksSinceSnapshot += 1;
 
       for (const event of result.events) {
         this.deps.eventBus.publish(event);
       }
 
+      this.recordTickCommands(previousTick, result.state.meta.tick, result.events, simNow);
+
       if (this.ticksSinceAutosave >= (this.deps.autosaveEveryTicks ?? 5)) {
         this.ticksSinceAutosave = 0;
         this.runAutosave();
+      }
+
+      const snapshotEveryTicks = Math.max(1, this.deps.snapshotEveryTicks ?? 25);
+      while (this.ticksSinceSnapshot >= snapshotEveryTicks) {
+        this.ticksSinceSnapshot -= snapshotEveryTicks;
+        this.captureSnapshot("periodic", simNow);
       }
 
       this.accumulatedMs -= tickDurationMs;
@@ -213,16 +757,19 @@ export class GameSession {
     }
 
     const slotId = createAutoSlotId(this.autoSlotIndex);
-    const snapshot = this.buildSnapshot(slotId);
+    const snapshot = this.buildSaveSlotSnapshot(slotId);
 
     this.autoSlotIndex = nextAutoSlot(this.autoSlotIndex);
 
     this.enqueueIo(async () => {
       await this.deps.saveRepository.saveToSlot(snapshot);
     });
+
+    this.recordSystemCommand("save.autosave", { slotId });
+    this.captureSnapshot("autosave");
   }
 
-  private buildSnapshot(slotId: SaveSlotId): SaveSnapshot {
+  private buildSaveSlotSnapshot(slotId: SaveSlotId): SaveSnapshot {
     const state = this.requireState();
     const now = this.deps.clock.now();
 
@@ -230,6 +777,47 @@ export class GameSession {
       summary: buildSaveSummary(slotId, state, now),
       state: structuredClone(state)
     };
+  }
+
+  private buildStateSnapshot(reason: SnapshotReason, savedAt = this.deps.clock.now()): StateSnapshot {
+    const state = this.requireState();
+
+    return {
+      id: `snapshot:${state.meta.tick}:${savedAt}:${reason}`,
+      tick: state.meta.tick,
+      savedAt,
+      reason,
+      commandSequence: this.commandSequence,
+      commandHash: this.commandHeadHash,
+      state: structuredClone(state)
+    };
+  }
+
+  private captureSnapshot(reason: SnapshotReason, savedAt = this.deps.clock.now()): void {
+    const repository = this.deps.snapshotRepository;
+    if (!repository || !this.currentState) {
+      return;
+    }
+
+    const snapshot = this.buildStateSnapshot(reason, savedAt);
+    const maxSnapshots = Math.max(5, this.deps.maxSnapshots ?? 20);
+
+    this.enqueueIo(async () => {
+      await repository.save(snapshot);
+      await this.pruneSnapshots(repository, maxSnapshots);
+    });
+  }
+
+  private async pruneSnapshots(repository: SnapshotRepository, maxSnapshots: number): Promise<void> {
+    const entries = await repository.list(maxSnapshots + 20);
+
+    if (entries.length <= maxSnapshots) {
+      return;
+    }
+
+    for (const stale of entries.slice(maxSnapshots)) {
+      await repository.delete(stale.id);
+    }
   }
 
   private persistCurrent(): void {
@@ -248,6 +836,17 @@ export class GameSession {
       });
   }
 
+  private async restoreFromSnapshotOrSave(): Promise<GameState | null> {
+    if (this.deps.snapshotRepository) {
+      const latestSnapshot = await this.deps.snapshotRepository.latest();
+      if (latestSnapshot) {
+        return structuredClone(latestSnapshot.state);
+      }
+    }
+
+    return this.restoreFromLatestSave();
+  }
+
   private async restoreFromLatestSave(): Promise<GameState | null> {
     const slots = await this.deps.saveRepository.listSlots();
 
@@ -259,6 +858,27 @@ export class GameSession {
     }
 
     return null;
+  }
+
+  private async bootstrapCommandHead(): Promise<void> {
+    const commandRepository = this.deps.commandLogRepository;
+
+    if (!commandRepository) {
+      this.commandSequence = 0;
+      this.commandHeadHash = "genesis";
+      return;
+    }
+
+    const latest = await commandRepository.latest();
+
+    if (!latest) {
+      this.commandSequence = 0;
+      this.commandHeadHash = "genesis";
+      return;
+    }
+
+    this.commandSequence = latest.sequence;
+    this.commandHeadHash = latest.hash;
   }
 
   private runOfflineProgression(state: GameState, now: number): { state: GameState; ticks: number } {
@@ -275,7 +895,7 @@ export class GameSession {
     let workingState = structuredClone(state);
 
     for (let index = 0; index < ticksToSimulate; index += 1) {
-            const tickNow = lastSnapshotAt + (index + 1) * workingState.meta.tickDurationMs;
+      const tickNow = lastSnapshotAt + (index + 1) * workingState.meta.tickDurationMs;
       const result = this.pipeline.run(workingState, workingState.meta.tickDurationMs, tickNow);
       workingState = result.state;
     }
@@ -314,5 +934,136 @@ export class GameSession {
       severity,
       occurredAt: now
     };
+  }
+
+  private createCommandEntry(input: Omit<CommandLogEntry, "sequence" | "id" | "previousHash" | "hash">): CommandLogEntry {
+    const sequence = this.commandSequence + 1;
+    const previousHash = this.commandHeadHash;
+    const id = `cmd:${input.tick}:${sequence}:${input.commandType}`;
+
+    const base = {
+      sequence,
+      id,
+      issuerType: input.issuerType,
+      issuerId: input.issuerId,
+      tick: input.tick,
+      commandType: input.commandType,
+      payload: input.payload,
+      createdAt: input.createdAt,
+      previousHash
+    };
+
+    const hash = hashDeterministic(base);
+
+    this.commandSequence = sequence;
+    this.commandHeadHash = hash;
+
+    return {
+      ...base,
+      hash
+    };
+  }
+
+  private enqueueCommandEntries(entries: CommandLogEntry[]): void {
+    const repository = this.deps.commandLogRepository;
+
+    if (!repository || entries.length === 0) {
+      return;
+    }
+
+    this.enqueueIo(async () => {
+      await repository.append(entries);
+    });
+  }
+
+  private recordPlayerCommand(commandType: string, payload: Record<string, unknown>): void {
+    const repository = this.deps.commandLogRepository;
+    const state = this.currentState;
+
+    if (!repository || !state) {
+      return;
+    }
+
+    const player = Object.keys(state.kingdoms)
+      .sort()
+      .map((kingdomId) => state.kingdoms[kingdomId])
+      .find((kingdom) => kingdom.isPlayer);
+    const entry = this.createCommandEntry({
+      issuerType: "player",
+      issuerId: player?.id ?? "player",
+      tick: state.meta.tick,
+      commandType,
+      payload,
+      createdAt: this.deps.clock.now()
+    });
+
+    this.enqueueCommandEntries([entry]);
+  }
+
+  private recordSystemCommand(commandType: string, payload: Record<string, unknown>, createdAt = this.deps.clock.now()): void {
+    const repository = this.deps.commandLogRepository;
+    const state = this.currentState;
+
+    if (!repository || !state) {
+      return;
+    }
+
+    const entry = this.createCommandEntry({
+      issuerType: "system",
+      issuerId: "runtime",
+      tick: state.meta.tick,
+      commandType,
+      payload,
+      createdAt
+    });
+
+    this.enqueueCommandEntries([entry]);
+  }
+
+  private recordTickCommands(previousTick: number, currentTick: number, events: DomainEvent[], createdAt: number): void {
+    const repository = this.deps.commandLogRepository;
+
+    if (!repository) {
+      return;
+    }
+
+    const entries: CommandLogEntry[] = [];
+
+    entries.push(
+      this.createCommandEntry({
+        issuerType: "system",
+        issuerId: "tick_engine",
+        tick: currentTick,
+        commandType: "tick.processed",
+        payload: {
+          previousTick,
+          currentTick,
+          eventCount: events.length
+        },
+        createdAt
+      })
+    );
+
+    for (const event of events) {
+      const issuerType: CommandLogEntry["issuerType"] = event.type.startsWith("npc.") ? "npc" : "system";
+      const issuerId = event.actorKingdomId ?? (issuerType === "npc" ? "npc" : "system");
+
+      entries.push(
+        this.createCommandEntry({
+          issuerType,
+          issuerId,
+          tick: currentTick,
+          commandType: `event.${event.type}`,
+          payload: {
+            eventId: event.id,
+            targetKingdomId: event.targetKingdomId,
+            payload: event.payload
+          },
+          createdAt
+        })
+      );
+    }
+
+    this.enqueueCommandEntries(entries);
   }
 }

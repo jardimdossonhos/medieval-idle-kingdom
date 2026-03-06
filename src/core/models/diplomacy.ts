@@ -25,6 +25,7 @@ export interface BilateralRelation {
   score: RelationScore;
   grievance: number;
   allianceStrength: number;
+  actionCooldowns: Record<string, TimestampMs>;
 }
 
 export interface DiplomacyState {

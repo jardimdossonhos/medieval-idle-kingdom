@@ -6,7 +6,15 @@ interface EventDescriptor {
   title: string;
   details: string;
   severity: EventLogEntry["severity"];
+  groupKey?: string;
+  suggestedAction?: string;
 }
+
+const SEVERITY_RANK: Record<EventLogEntry["severity"], number> = {
+  info: 0,
+  warning: 1,
+  critical: 2
+};
 
 function kingdomName(state: GameState, kingdomId: string | undefined): string {
   if (!kingdomId) {
@@ -14,6 +22,17 @@ function kingdomName(state: GameState, kingdomId: string | undefined): string {
   }
 
   return state.kingdoms[kingdomId]?.name ?? kingdomId;
+}
+
+function buildGroupKey(event: DomainEvent, customKey?: string): string {
+  if (customKey) {
+    return customKey;
+  }
+
+  const actor = event.actorKingdomId ?? "none";
+  const target = event.targetKingdomId ?? "none";
+  const regionId = typeof event.payload.regionId === "string" ? event.payload.regionId : "none";
+  return `${event.type}|${actor}|${target}|${regionId}`;
 }
 
 function describeNpcDecision(event: DomainEvent, state: GameState): EventDescriptor {
@@ -25,7 +44,9 @@ function describeNpcDecision(event: DomainEvent, state: GameState): EventDescrip
   return {
     title: "Movimento diplomático estrangeiro",
     details: `${actor} executou ${actionType} contra ${target} (${result}).`,
-    severity: actionType === "declarar_guerra" ? "warning" : "info"
+    severity: actionType === "declarar_guerra" ? "warning" : "info",
+    suggestedAction: actionType === "declarar_guerra" ? "Fortaleça guarnições e negocie alianças defensivas." : "Ajuste sua postura diplomática com este reino.",
+    groupKey: `npc.decision|${event.actorKingdomId ?? "none"}|${event.targetKingdomId ?? "none"}|${actionType}`
   };
 }
 
@@ -36,7 +57,9 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Escassez de alimentos",
         details: `${actor} está abaixo do estoque alimentar recomendado.`,
-        severity: "warning"
+        severity: "warning",
+        suggestedAction: "Invista em agricultura nas regiões do seu reino.",
+        groupKey: `economy.food_shortage|${event.actorKingdomId ?? "none"}`
       };
     }
     case "population.unrest_warning": {
@@ -44,7 +67,9 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Agitação social",
         details: `${actor} apresenta agitação elevada e risco político interno.`,
-        severity: "warning"
+        severity: "warning",
+        suggestedAction: "Use a ação Pacificar na região crítica e reduza pressão fiscal.",
+        groupKey: `population.unrest_warning|${event.actorKingdomId ?? "none"}`
       };
     }
     case "technology.completed": {
@@ -53,7 +78,8 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Pesquisa concluída",
         details: `${actor} concluiu ${technologyId}.`,
-        severity: "info"
+        severity: "info",
+        suggestedAction: "Mantenha foco de pesquisa coerente com sua estratégia atual."
       };
     }
     case "religion.tension": {
@@ -61,7 +87,8 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Tensão religiosa",
         details: `${actor} enfrenta tensão entre coesão religiosa e tolerância interna.`,
-        severity: "warning"
+        severity: "warning",
+        suggestedAction: "Aumente orçamento religioso ou ajuste política de tolerância."
       };
     }
     case "administration.revolt_risk": {
@@ -70,7 +97,9 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Risco de revolta",
         details: `${actor} detectou risco elevado de revolta em ${regionId}.`,
-        severity: "warning"
+        severity: "warning",
+        suggestedAction: "Aplique pacificação e reforce guarnição local.",
+        groupKey: `administration.revolt_risk|${event.actorKingdomId ?? "none"}|${regionId}`
       };
     }
     case "war.started": {
@@ -79,7 +108,8 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Guerra declarada",
         details: `${actor} iniciou guerra contra ${target}.`,
-        severity: "critical"
+        severity: "critical",
+        suggestedAction: "Priorize orçamento militar e prepare defesa de fronteira."
       };
     }
     case "war.escalated": {
@@ -87,7 +117,9 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Guerra escalando",
         details: `O conflito ${warId} atingiu intensidade alta no front.`,
-        severity: "warning"
+        severity: "warning",
+        suggestedAction: "Tente proposta de paz se sua exaustão estiver elevada.",
+        groupKey: `war.escalated|${warId}`
       };
     }
     case "war.region_captured": {
@@ -96,7 +128,9 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Território conquistado",
         details: `${actor} tomou controle de ${regionId}.`,
-        severity: "critical"
+        severity: "critical",
+        suggestedAction: "Invista e pacifique a região conquistada para evitar rebelião.",
+        groupKey: `war.region_captured|${regionId}|${event.actorKingdomId ?? "none"}`
       };
     }
     case "war.peace": {
@@ -105,7 +139,8 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Paz assinada",
         details: `${actor} e ${target} encerraram hostilidades.`,
-        severity: "info"
+        severity: "info",
+        suggestedAction: "Reorganize economia e recupere estabilidade interna."
       };
     }
     case "npc.decision":
@@ -114,7 +149,8 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
       return {
         title: "Vitória alcançada",
         details: "Um caminho de vitória foi completado. O modo contínuo permanece ativo.",
-        severity: "critical"
+        severity: "critical",
+        suggestedAction: "Prepare-se para crises de superexpansão no pós-vitória."
       };
     default:
       return {
@@ -125,7 +161,15 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
   }
 }
 
-export function createEventLogSystem(maxEntries = 180): SimulationSystem {
+function mergeSeverity(current: EventLogEntry["severity"], incoming: EventLogEntry["severity"]): EventLogEntry["severity"] {
+  return SEVERITY_RANK[current] >= SEVERITY_RANK[incoming] ? current : incoming;
+}
+
+function stripCountSuffix(details: string): string {
+  return details.replace(/\s\(x\d+\)$/u, "");
+}
+
+export function createEventLogSystem(maxEntries = 180, dedupeWindowMs = 45_000): SimulationSystem {
   return {
     id: "event_log",
     run(context): void {
@@ -133,19 +177,53 @@ export function createEventLogSystem(maxEntries = 180): SimulationSystem {
         return;
       }
 
-      const newEntries: EventLogEntry[] = context.events.map((event) => {
-        const descriptor = describeEvent(event, context.nextState);
+      const mergedLog = [...context.nextState.events];
 
-        return {
+      for (const event of context.events) {
+        const descriptor = describeEvent(event, context.nextState);
+        const groupKey = buildGroupKey(event, descriptor.groupKey);
+
+        const existingIndex = mergedLog.findIndex(
+          (entry) => entry.groupKey === groupKey && context.now - entry.occurredAt <= dedupeWindowMs
+        );
+
+        if (existingIndex >= 0) {
+          const previous = mergedLog[existingIndex];
+          const nextCount = (previous.count ?? 1) + 1;
+          const baseDetails = stripCountSuffix(previous.details);
+
+          mergedLog.splice(existingIndex, 1);
+          mergedLog.unshift({
+            ...previous,
+            severity: mergeSeverity(previous.severity, descriptor.severity),
+            occurredAt: event.occurredAt,
+            details: `${baseDetails} (x${nextCount})`,
+            count: nextCount,
+            suggestedAction: descriptor.suggestedAction ?? previous.suggestedAction,
+            actorKingdomId: event.actorKingdomId,
+            targetKingdomId: event.targetKingdomId
+          });
+
+          continue;
+        }
+
+        mergedLog.unshift({
           id: event.id,
           title: descriptor.title,
           details: descriptor.details,
           severity: descriptor.severity,
-          occurredAt: event.occurredAt
-        };
-      });
+          occurredAt: event.occurredAt,
+          count: 1,
+          groupKey,
+          suggestedAction: descriptor.suggestedAction,
+          actorKingdomId: event.actorKingdomId,
+          targetKingdomId: event.targetKingdomId
+        });
+      }
 
-      context.nextState.events = [...newEntries, ...context.nextState.events].slice(0, maxEntries);
+      context.nextState.events = mergedLog
+        .sort((left, right) => right.occurredAt - left.occurredAt)
+        .slice(0, maxEntries);
     }
   };
 }

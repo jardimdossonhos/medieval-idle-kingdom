@@ -65,10 +65,10 @@ function createBaseEconomy(seedGold: number): EconomyState {
   };
 }
 
-function createKingdom(id: string, name: string, adjective: string, capitalRegionId: string, isPlayer: boolean): KingdomState {
+function createKingdom(id: string, name: string, adjective: string, capitalRegionId: string, isPlayer: boolean, now: number): KingdomState {
   const seedTreatyParties = sortUniqueIds(["k_player", "k_rival_south"]);
-  const seedTreatySignedAt = Date.now() - 1000 * 60 * 60;
-  const seedTreatyExpiresAt = Date.now() + 1000 * 60 * 60 * 10;
+  const seedTreatySignedAt = now - 1000 * 60 * 60;
+  const seedTreatyExpiresAt = now + 1000 * 60 * 60 * 10;
 
   return {
     id,
@@ -83,6 +83,7 @@ function createKingdom(id: string, name: string, adjective: string, capitalRegio
       activeResearchId: "ledger_admin",
       accumulatedResearch: 0,
       researchRate: 1,
+      researchFocus: TechnologyDomain.Administration,
       doctrineMilitary: "levy_discipline",
       doctrineAdministration: "crown_stewardship"
     },
@@ -299,7 +300,8 @@ function createSeedRelations(state: GameState): void {
           tradeValue: 0.3
         },
         grievance: 0.1,
-        allianceStrength: 0
+        allianceStrength: 0,
+        actionCooldowns: {}
       };
     }
   }
@@ -335,10 +337,10 @@ export function createInitialState(): GameState {
     },
     world: createWorldState(),
     kingdoms: {
-      k_player: createKingdom("k_player", "Coroa da Ibéria", "Ibérico", "r_iberia_north", true),
-      k_rival_north: createKingdom("k_rival_north", "Reino da Gália", "Gálico", "r_gallia_west", false),
-      k_rival_east: createKingdom("k_rival_east", "Império da Anatólia", "Anatólio", "r_anatolia_west", false),
-      k_rival_south: createKingdom("k_rival_south", "Sultanato do Magrebe", "Magrebino", "r_maghreb_west", false)
+      k_player: createKingdom("k_player", "Coroa da Ibéria", "Ibérico", "r_iberia_north", true, now),
+      k_rival_north: createKingdom("k_rival_north", "Reino da Gália", "Gálico", "r_gallia_west", false, now),
+      k_rival_east: createKingdom("k_rival_east", "Império da Anatólia", "Anatólio", "r_anatolia_west", false, now),
+      k_rival_south: createKingdom("k_rival_south", "Sultanato do Magrebe", "Magrebino", "r_maghreb_west", false, now)
     },
     wars: {},
     events: [
@@ -360,6 +362,11 @@ export function createInitialState(): GameState {
   };
 
   createSeedRelations(state);
+
+  for (const regionId of Object.keys(state.world.regions)) {
+    const region = state.world.regions[regionId];
+    region.actionCooldowns = region.actionCooldowns ?? {};
+  }
 
   state.kingdoms.k_player.technology.unlocked.push(
     `domain_${TechnologyDomain.Administration}_tier_1`

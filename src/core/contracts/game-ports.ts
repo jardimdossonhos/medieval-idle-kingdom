@@ -1,4 +1,5 @@
-﻿import type { GameState } from "../models/game-state";
+﻿import type { CommandLogEntry, SnapshotSummary, StateSnapshot } from "../models/commands";
+import type { GameState } from "../models/game-state";
 import type { TimestampMs } from "../models/types";
 
 export type SaveSlotId = `auto-${number}` | "manual-1" | "safety-1";
@@ -31,4 +32,19 @@ export interface SaveRepository {
   loadFromSlot(slotId: SaveSlotId): Promise<SaveSnapshot | null>;
   listSlots(): Promise<SaveSummary[]>;
   deleteSlot(slotId: SaveSlotId): Promise<void>;
+}
+
+export interface CommandLogRepository {
+  append(entries: CommandLogEntry[]): Promise<void>;
+  latest(): Promise<CommandLogEntry | null>;
+  listAfter(sequence: number, limit?: number): Promise<CommandLogEntry[]>;
+  clear(): Promise<void>;
+}
+
+export interface SnapshotRepository {
+  save(snapshot: StateSnapshot): Promise<void>;
+  latest(): Promise<StateSnapshot | null>;
+  load(snapshotId: string): Promise<StateSnapshot | null>;
+  list(limit?: number): Promise<SnapshotSummary[]>;
+  delete(snapshotId: string): Promise<void>;
 }

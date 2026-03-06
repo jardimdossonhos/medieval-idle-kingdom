@@ -21,6 +21,7 @@ export interface RegionState {
   unrest: number;
   devastation: number;
   localFaithStrength: number;
+  actionCooldowns?: Record<string, number>;
 }
 
 export interface StrategicRoute {

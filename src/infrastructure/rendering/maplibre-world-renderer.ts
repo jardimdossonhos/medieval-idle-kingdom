@@ -1,0 +1,270 @@
+﻿import maplibregl, { type GeoJSONSource, type Map } from "maplibre-gl";
+import type { FeatureCollection, Geometry } from "geojson";
+import type { KingdomState } from "../../core/models/game-state";
+import type { WorldState } from "../../core/models/world";
+import type { GameMapRenderer, MapLayerMode } from "./map-renderer";
+
+interface CountryFeatureProperties {
+  regionId?: string;
+  ownerId?: string;
+  ownerName?: string;
+  ownerColor?: string;
+  unrest?: number;
+  contested?: number;
+  selected?: number;
+}
+
+interface CountryFeature {
+  type: "Feature";
+  geometry: Geometry;
+  properties: CountryFeatureProperties;
+}
+
+interface CountryFeatureCollection {
+  type: "FeatureCollection";
+  features: CountryFeature[];
+}
+
+const SOURCE_ID = "world-countries";
+const FILL_LAYER_ID = "countries-fill";
+const BORDER_LAYER_ID = "countries-border";
+
+export class MapLibreWorldRenderer implements GameMapRenderer {
+  private map: Map | null = null;
+  private geojson: CountryFeatureCollection | null = null;
+  private layerMode: MapLayerMode = "owner";
+  private selectedRegionId: string | null = null;
+  private mounted = false;
+
+  constructor(
+    private readonly container: HTMLElement,
+    private readonly onRegionSelect?: (regionId: string) => void
+  ) {}
+
+  async mount(world: WorldState, kingdoms: Record<string, KingdomState>): Promise<void> {
+    if (!this.map) {
+      this.map = new maplibregl.Map({
+        container: this.container,
+        style: {
+          version: 8,
+          sources: {},
+          layers: [
+            {
+              id: "background",
+              type: "background",
+              paint: {
+                "background-color": "#d8c7aa"
+              }
+            }
+          ]
+        },
+        center: [12, 27],
+        zoom: 2.2,
+        maxZoom: 7,
+        minZoom: 1.4
+      });
+
+      this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+      this.map.touchZoomRotate.enable();
+    }
+
+    if (!this.geojson) {
+      this.geojson = await this.loadGeoJson();
+    }
+
+    if (!this.mounted) {
+      await this.mountLayers();
+      this.mounted = true;
+    }
+
+    this.render(world, kingdoms);
+  }
+
+  setLayer(layer: MapLayerMode): void {
+    this.layerMode = layer;
+    this.applyLayerMode();
+  }
+
+  render(world: WorldState, kingdoms: Record<string, KingdomState>): void {
+    if (!this.map || !this.geojson) {
+      return;
+    }
+
+    const contestedRegionIds = new Set(
+      Object.keys(world.regions)
+        .sort()
+        .filter((regionId) => world.regions[regionId].devastation > 0.22)
+    );
+
+    for (const feature of this.geojson.features) {
+      const regionId = feature.properties.regionId;
+      if (!regionId) {
+        continue;
+      }
+
+      const region = world.regions[regionId];
+      if (!region) {
+        feature.properties.ownerId = "unknown";
+        feature.properties.ownerName = "Sem dono";
+        feature.properties.ownerColor = "#7a6f5f";
+        feature.properties.unrest = 0;
+        feature.properties.contested = 0;
+        feature.properties.selected = 0;
+        continue;
+      }
+
+      const owner = kingdoms[region.ownerId];
+
+      feature.properties.ownerId = owner?.id ?? region.ownerId;
+      feature.properties.ownerName = owner?.name ?? region.ownerId;
+      feature.properties.ownerColor = colorForKingdom(owner?.id ?? region.ownerId);
+      feature.properties.unrest = region.unrest;
+      feature.properties.contested = contestedRegionIds.has(regionId) ? 1 : 0;
+      feature.properties.selected = this.selectedRegionId === regionId ? 1 : 0;
+    }
+
+    const source = this.map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+    source?.setData(this.geojson as unknown as FeatureCollection);
+    this.applyLayerMode();
+  }
+
+  destroy(): void {
+    if (!this.map) {
+      return;
+    }
+
+    this.map.remove();
+    this.map = null;
+    this.mounted = false;
+    this.geojson = null;
+  }
+
+  private async mountLayers(): Promise<void> {
+    if (!this.map) {
+      return;
+    }
+
+    if (!this.map.isStyleLoaded()) {
+      await new Promise<void>((resolve) => {
+        this.map?.once("load", () => resolve());
+      });
+    }
+
+    if (!this.map.getSource(SOURCE_ID)) {
+      this.map.addSource(SOURCE_ID, {
+        type: "geojson",
+        data: this.geojson as unknown as FeatureCollection
+      });
+    }
+
+    if (!this.map.getLayer(FILL_LAYER_ID)) {
+      this.map.addLayer({
+        id: FILL_LAYER_ID,
+        type: "fill",
+        source: SOURCE_ID,
+        paint: {
+          "fill-color": ["coalesce", ["get", "ownerColor"], "#8d816e"],
+          "fill-opacity": 0.78
+        }
+      });
+    }
+
+    if (!this.map.getLayer(BORDER_LAYER_ID)) {
+      this.map.addLayer({
+        id: BORDER_LAYER_ID,
+        type: "line",
+        source: SOURCE_ID,
+        paint: {
+          "line-color": [
+            "case",
+            ["==", ["get", "selected"], 1],
+            "#f2d067",
+            "#4a3722"
+          ],
+          "line-width": [
+            "case",
+            ["==", ["get", "selected"], 1],
+            2.5,
+            1.2
+          ]
+        }
+      });
+    }
+
+    this.map.on("click", FILL_LAYER_ID, (event) => {
+      const feature = event.features?.[0];
+      const regionId = feature?.properties?.regionId;
+
+      if (typeof regionId === "string") {
+        this.selectedRegionId = regionId;
+        this.onRegionSelect?.(regionId);
+      }
+    });
+
+    this.map.on("mouseenter", FILL_LAYER_ID, () => {
+      if (this.map) {
+        this.map.getCanvas().style.cursor = "pointer";
+      }
+    });
+
+    this.map.on("mouseleave", FILL_LAYER_ID, () => {
+      if (this.map) {
+        this.map.getCanvas().style.cursor = "";
+      }
+    });
+  }
+
+  private async loadGeoJson(): Promise<CountryFeatureCollection> {
+    const response = await fetch("/assets/maps/world-countries-v0.geojson");
+
+    if (!response.ok) {
+      throw new Error("Falha ao carregar GeoJSON inicial do mapa mundial.");
+    }
+
+    const payload = (await response.json()) as CountryFeatureCollection;
+    if (payload.type !== "FeatureCollection" || !Array.isArray(payload.features)) {
+      throw new Error("GeoJSON inválido para camada mundial.");
+    }
+
+    return payload;
+  }
+
+  private applyLayerMode(): void {
+    if (!this.map || !this.map.getLayer(FILL_LAYER_ID)) {
+      return;
+    }
+
+    switch (this.layerMode) {
+      case "owner":
+        this.map.setPaintProperty(FILL_LAYER_ID, "fill-color", ["coalesce", ["get", "ownerColor"], "#8d816e"]);
+        break;
+      case "unrest":
+        this.map.setPaintProperty(FILL_LAYER_ID, "fill-color", [
+          "interpolate",
+          ["linear"],
+          ["coalesce", ["get", "unrest"], 0],
+          0,
+          "#3e6b57",
+          0.45,
+          "#bb7a2a",
+          0.75,
+          "#ad2a24"
+        ]);
+        break;
+      case "war":
+        this.map.setPaintProperty(FILL_LAYER_ID, "fill-color", [
+          "case",
+          ["==", ["coalesce", ["get", "contested"], 0], 1],
+          "#a31f1f",
+          ["coalesce", ["get", "ownerColor"], "#8d816e"]
+        ]);
+        break;
+    }
+  }
+}
+
+function colorForKingdom(kingdomId: string): string {
+  const palette = ["#8f5b3c", "#4f6d52", "#5d5277", "#9b6c2e", "#435b78", "#7d4f5f"];
+  const hash = kingdomId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}

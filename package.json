@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "idb": "^8.0.2",
+    "maplibre-gl": "^5.11.0",
     "pixi.js": "^8.8.1"
   },
   "devDependencies": {

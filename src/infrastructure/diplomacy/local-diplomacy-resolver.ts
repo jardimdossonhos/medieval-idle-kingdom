@@ -46,7 +46,8 @@ function ensureRelation(kingdom: KingdomState, otherKingdomId: KingdomId): Bilat
       tradeValue: 0.2
     },
     grievance: 0.08,
-    allianceStrength: 0
+    allianceStrength: 0,
+    actionCooldowns: {}
   };
 
   kingdom.diplomacy.relations[otherKingdomId] = created;
@@ -130,16 +131,22 @@ function softenRelationForPeace(relation: BilateralRelation): void {
 
 export class LocalDiplomacyResolver implements DiplomacyResolver {
   resolveTick(state: GameState, now: number): GameState {
-    const player = Object.values(state.kingdoms).find((kingdom) => kingdom.isPlayer);
+    const player = Object.keys(state.kingdoms)
+      .sort()
+      .map((kingdomId) => state.kingdoms[kingdomId])
+      .find((kingdom) => kingdom.isPlayer);
     const totalRegions = Math.max(1, Object.keys(state.world.regions).length);
     const playerTerritoryShare = player ? getOwnedRegionCount(state, player.id) / totalRegions : 0;
 
-    for (const kingdom of Object.values(state.kingdoms)) {
+    for (const kingdomId of Object.keys(state.kingdoms).sort()) {
+      const kingdom = state.kingdoms[kingdomId];
       kingdom.diplomacy.treaties = kingdom.diplomacy.treaties.filter(
         (treaty) => treaty.expiresAt === null || treaty.expiresAt > now
       );
 
-      for (const relation of Object.values(kingdom.diplomacy.relations)) {
+      for (const relationId of Object.keys(kingdom.diplomacy.relations).sort()) {
+        const relation = kingdom.diplomacy.relations[relationId];
+        relation.actionCooldowns = relation.actionCooldowns ?? {};
         const hostilityBias = relation.status === DiplomaticRelation.Hostile ? 0.012 : 0;
         const alliedBias = relation.status === DiplomaticRelation.Allied ? 0.009 : 0;
 
@@ -238,6 +245,29 @@ export class LocalDiplomacyResolver implements DiplomacyResolver {
           blockedRoutes: true
         });
 
+        break;
+      }
+      case "pacto_nao_agressao": {
+        actorRelation.score.trust = roundTo(clamp(actorRelation.score.trust + 0.06, 0, 1));
+        targetRelation.score.trust = roundTo(clamp(targetRelation.score.trust + 0.06, 0, 1));
+        actorRelation.grievance = roundTo(clamp(actorRelation.grievance - 0.04, 0, 1));
+        targetRelation.grievance = roundTo(clamp(targetRelation.grievance - 0.04, 0, 1));
+
+        registerPairTreaty(state, actor.id, target.id, TreatyType.NonAggression, now, now + DEFAULT_TREATY_DURATION_MS * 2, {
+          noBorderWar: true
+        });
+        setPairStatus(state, actor.id, target.id, DiplomaticRelation.Friendly);
+        break;
+      }
+      case "exigir_tributo": {
+        actorRelation.score.fear = roundTo(clamp(actorRelation.score.fear + 0.09, 0, 1));
+        targetRelation.score.fear = roundTo(clamp(targetRelation.score.fear + 0.12, 0, 1));
+        targetRelation.grievance = roundTo(clamp(targetRelation.grievance + 0.08, 0, 1));
+        actorRelation.score.tradeValue = roundTo(clamp(actorRelation.score.tradeValue + 0.04, 0, 1));
+
+        registerPairTreaty(state, actor.id, target.id, TreatyType.Tribute, now, now + DEFAULT_TREATY_DURATION_MS, {
+          tributeRate: 0.1
+        });
         break;
       }
       case "proposta_paz": {
