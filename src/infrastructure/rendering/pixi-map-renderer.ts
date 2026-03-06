@@ -85,6 +85,10 @@ export class PixiMapRenderer implements GameMapRenderer {
         );
       }
 
+      if (this.mapLayer === "religion") {
+        fillColor = colorForFaith(regionState.dominantFaith, this.staticData);
+      }
+
       const projected = this.toCanvasPoint(node.definition);
       redrawRegionShape(node.shape, projected, fillColor, selected, recentlyCaptured);
       node.label.x = projected.x;
@@ -221,4 +225,15 @@ function colorForWarPressure(devastation: number): number {
   }
 
   return 0x4f5f6b;
+}
+
+function colorForFaith(faithId: string, staticData: StaticWorldData): number {
+  const directColor = staticData.religions[faithId]?.color;
+  if (typeof directColor === "string" && directColor.startsWith("#")) {
+    return Number.parseInt(directColor.slice(1), 16);
+  }
+
+  const palette = [0x7b4a33, 0xad7b2f, 0x4f6c3e, 0xb66a6a, 0x49657a, 0x8a6a9b, 0x2f6f74];
+  const hash = faithId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
 }

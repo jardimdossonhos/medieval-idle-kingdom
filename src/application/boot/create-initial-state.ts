@@ -16,7 +16,8 @@ import { buildTreatyId, sortUniqueIds } from "../../core/models/identifiers";
 import type { NpcBehaviorState } from "../../core/models/npc";
 import type { PopulationState } from "../../core/models/population";
 import type { StaticWorldData } from "../../core/models/static-world-data";
-import type { RegionDefinition, RegionState, WorldState } from "../../core/models/world";
+import type { ReligionId } from "../../core/models/types";
+import type { RegionDefinition, RegionState, RegionZone, WorldState } from "../../core/models/world";
 import { createStaticWorldData } from "./static-world-data";
 
 interface KingdomBlueprint {
@@ -166,6 +167,49 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+const DEFAULT_RELIGION_BY_ZONE: Record<RegionZone, ReligionId> = {
+  europe: "imperial_church",
+  north_africa: "desert_faith",
+  near_east: "desert_faith",
+  north_america: "ancestral_cults",
+  south_america: "lotus_order",
+  sub_saharan_africa: "ancestral_cults",
+  central_asia: "northern_old_gods",
+  south_asia: "lotus_order",
+  east_asia: "scholar_sun",
+  oceania: "sea_saints"
+};
+
+function listReligionIds(staticData: StaticWorldData): ReligionId[] {
+  const ids = Object.keys(staticData.religions).sort();
+  if (ids.length === 0) {
+    return ["imperial_church"];
+  }
+  return ids;
+}
+
+function religionByZone(zone: RegionZone, staticData: StaticWorldData): ReligionId {
+  const preferred = DEFAULT_RELIGION_BY_ZONE[zone];
+  if (staticData.religions[preferred]) {
+    return preferred;
+  }
+
+  const ids = listReligionIds(staticData);
+  return ids[0];
+}
+
+function pickDeterministicReligion(
+  staticData: StaticWorldData,
+  seedKey: string,
+  excluded: ReligionId | null = null
+): ReligionId {
+  const ids = listReligionIds(staticData);
+  const usable = ids.filter((id) => id !== excluded);
+  const pool = usable.length > 0 ? usable : ids;
+  const hash = hashString(seedKey);
+  return pool[hash % pool.length];
+}
+
 function createBasePopulation(total: number): PopulationState {
   return {
     total,
@@ -298,7 +342,12 @@ function createNpcBehavior(archetype: NpcArchetype, strategicGoal: string): NpcB
   };
 }
 
-function createKingdom(blueprint: KingdomBlueprint, capitalRegionId: string, ownedRegionCount: number): KingdomState {
+function createKingdom(
+  blueprint: KingdomBlueprint,
+  capitalRegionId: string,
+  ownedRegionCount: number,
+  stateFaith: ReligionId
+): KingdomState {
   const populationBase = blueprint.isPlayer ? 2_300_000 : 1_600_000;
   const populationTotal = populationBase + ownedRegionCount * 130_000;
   const seedGold = (blueprint.isPlayer ? 360 : 290) + ownedRegionCount * 3;
@@ -323,12 +372,15 @@ function createKingdom(blueprint: KingdomBlueprint, capitalRegionId: string, own
       doctrineAdministration: "crown_stewardship"
     },
     religion: {
-      stateFaith: "imperial_church",
+      stateFaith,
       policy: ReligiousPolicy.Orthodoxy,
       authority: blueprint.isPlayer ? 0.62 : 0.57,
       cohesion: blueprint.isPlayer ? 0.6 : 0.54,
       conversionPressure: 0.18,
-      tolerance: 0.35
+      tolerance: 0.35,
+      missionaryBudget: blueprint.isPlayer ? 0.22 : 0.18,
+      externalInfluenceIn: {},
+      holyWarCooldownUntil: 0
     },
     military: {
       posture: ArmyPosture.Balanced,
@@ -490,13 +542,30 @@ function selectCapitalRegionId(
   return blueprint.preferredCapitalRegionId;
 }
 
-function createRegionState(definition: RegionDefinition, ownerId: string): RegionState {
+function createRegionState(
+  definition: RegionDefinition,
+  ownerId: string,
+  ownerFaith: ReligionId,
+  staticData: StaticWorldData
+): RegionState {
   const seed = hashString(definition.id);
   const unrest = 0.08 + ((seed % 23) / 100);
   const autonomy = 0.2 + ((Math.floor(seed / 13) % 22) / 100);
   const devastation = ((Math.floor(seed / 31) % 7) / 100);
   const assimilation = 0.74 + ((Math.floor(seed / 47) % 23) / 100);
-  const faithStrength = 0.45 + ((Math.floor(seed / 71) % 33) / 100);
+  const zoneFaith = religionByZone(definition.zone, staticData);
+  const dominantFaith = ownerFaith;
+  const dominantShare = clamp(0.57 + ((Math.floor(seed / 71) % 25) / 100), 0.52, 0.86);
+  const minorityFaith = zoneFaith === dominantFaith
+    ? pickDeterministicReligion(staticData, `${definition.id}:minority`, dominantFaith)
+    : zoneFaith;
+  const rawMinorityShare = 0.12 + ((Math.floor(seed / 97) % 18) / 100);
+  const minorityShare = clamp(Math.min(rawMinorityShare, 0.95 - dominantShare), 0.08, 0.38);
+  const faithUnrest = clamp(
+    0.05 + minorityShare * 0.42 + (dominantFaith === zoneFaith ? 0 : 0.08) + ((Math.floor(seed / 131) % 6) / 100),
+    0,
+    1
+  );
 
   return {
     regionId: definition.id,
@@ -506,19 +575,28 @@ function createRegionState(definition: RegionDefinition, ownerId: string): Regio
     assimilation: round(clamp(assimilation, 0, 1)),
     unrest: round(clamp(unrest, 0, 1)),
     devastation: round(clamp(devastation, 0, 1)),
-    localFaithStrength: round(clamp(faithStrength, 0, 1)),
+    dominantFaith,
+    dominantShare: round(clamp(dominantShare, 0, 1)),
+    minorityFaith,
+    minorityShare: round(clamp(minorityShare, 0, 1)),
+    faithUnrest: round(faithUnrest),
     actionCooldowns: {}
   };
 }
 
-function createWorldState(ownerByRegionId: Record<string, string>, staticData: StaticWorldData): WorldState {
+function createWorldState(
+  ownerByRegionId: Record<string, string>,
+  staticData: StaticWorldData,
+  faithByKingdomId: Record<string, ReligionId>
+): WorldState {
   const definitions = toDefinitionMap(listDefinitionsSorted(staticData));
   const regions: Record<string, RegionState> = {};
 
   for (const regionId of Object.keys(definitions).sort()) {
     const definition = definitions[regionId];
     const ownerId = ownerByRegionId[regionId] ?? "k_rival_north";
-    regions[regionId] = createRegionState(definition, ownerId);
+    const ownerFaith = faithByKingdomId[ownerId] ?? religionByZone(definition.zone, staticData);
+    regions[regionId] = createRegionState(definition, ownerId, ownerFaith, staticData);
   }
 
   return {
@@ -594,7 +672,12 @@ function createKingdoms(ownerByRegionId: Record<string, string>, staticData: Sta
   for (const blueprint of KINGDOM_BLUEPRINTS) {
     const ownedRegions = byOwner.get(blueprint.id) ?? [];
     const capitalRegionId = selectCapitalRegionId(blueprint, definitionsById, ownedRegions);
-    kingdoms[blueprint.id] = createKingdom(blueprint, capitalRegionId, ownedRegions.length);
+    const capitalZone = definitionsById[capitalRegionId]?.zone ?? "europe";
+    const zoneFaith = religionByZone(capitalZone, staticData);
+    const stateFaith = pickDeterministicReligion(staticData, `${blueprint.id}:${capitalRegionId}`, null);
+    const preferredFaith = blueprint.isPlayer ? "imperial_church" : zoneFaith;
+    const chosenFaith = staticData.religions[preferredFaith] ? preferredFaith : stateFaith;
+    kingdoms[blueprint.id] = createKingdom(blueprint, capitalRegionId, ownedRegions.length, chosenFaith);
   }
 
   return kingdoms;
@@ -605,10 +688,16 @@ export function createInitialState(staticData: StaticWorldData = createStaticWor
   const definitions = listDefinitionsSorted(staticData);
   const kingdomIds = KINGDOM_BLUEPRINTS.map((entry) => entry.id).sort();
   const ownerByRegionId = assignRegionOwners(definitions, kingdomIds);
+  const kingdoms = createKingdoms(ownerByRegionId, staticData);
+  const faithByKingdomId = Object.fromEntries(
+    Object.keys(kingdoms)
+      .sort()
+      .map((kingdomId) => [kingdomId, kingdoms[kingdomId].religion.stateFaith] as const)
+  );
 
   const state: GameState = {
     meta: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sessionId: `session_${now}`,
       tick: 0,
       tickDurationMs: 3_000,
@@ -631,8 +720,8 @@ export function createInitialState(staticData: StaticWorldData = createStaticWor
         { path: VictoryPath.DynasticLegacy, threshold: 0.72 }
       ]
     },
-    world: createWorldState(ownerByRegionId, staticData),
-    kingdoms: createKingdoms(ownerByRegionId, staticData),
+    world: createWorldState(ownerByRegionId, staticData, faithByKingdomId),
+    kingdoms,
     wars: {},
     events: [
       {

@@ -3,6 +3,7 @@ export type TickId = number;
 
 export type KingdomId = string;
 export type RegionId = string;
+export type ReligionId = string;
 export type WarId = string;
 export type TreatyId = string;
 export type EventId = string;

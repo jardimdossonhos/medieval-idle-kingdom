@@ -13,7 +13,7 @@ export class HybridMapRenderer implements GameMapRenderer {
     private readonly staticData: StaticWorldData,
     private readonly onRegionSelect?: (selection: MapSelection) => void
   ) {
-    this.active = new MapLibreWorldRenderer(container, onRegionSelect);
+    this.active = new MapLibreWorldRenderer(container, staticData, onRegionSelect);
   }
 
   async mount(world: WorldState, kingdoms: Record<string, KingdomState>): Promise<void> {

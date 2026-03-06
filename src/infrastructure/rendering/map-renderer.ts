@@ -1,7 +1,7 @@
 ﻿import type { KingdomState } from "../../core/models/game-state";
 import type { WorldState } from "../../core/models/world";
 
-export type MapLayerMode = "owner" | "unrest" | "war";
+export type MapLayerMode = "owner" | "unrest" | "war" | "religion";
 
 export interface MapSelection {
   regionId: string;

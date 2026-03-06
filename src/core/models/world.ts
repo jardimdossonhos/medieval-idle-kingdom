@@ -1,4 +1,4 @@
-﻿import type { KingdomId, Point2D, RegionId } from "./types";
+import type { KingdomId, Point2D, RegionId, ReligionId } from "./types";
 
 export type RegionZone =
   | "europe"
@@ -32,7 +32,11 @@ export interface RegionState {
   assimilation: number;
   unrest: number;
   devastation: number;
-  localFaithStrength: number;
+  dominantFaith: ReligionId;
+  dominantShare: number;
+  minorityFaith?: ReligionId;
+  minorityShare?: number;
+  faithUnrest: number;
   actionCooldowns?: Record<string, number>;
 }
 

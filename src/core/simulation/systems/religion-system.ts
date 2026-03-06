@@ -1,24 +1,117 @@
-﻿import { ReligiousPolicy } from "../../models/enums";
+import { ReligiousPolicy } from "../../models/enums";
+import type { RegionState } from "../../models/world";
 import type { SimulationSystem } from "../tick-pipeline";
 import { clamp, createEventId, getOwnedRegionIds, roundTo } from "./utils";
+
+function faithShare(region: RegionState, faithId: string): number {
+  if (region.dominantFaith === faithId) {
+    return clamp(region.dominantShare, 0, 1);
+  }
+
+  if (region.minorityFaith === faithId) {
+    return clamp(region.minorityShare ?? 0, 0, 1);
+  }
+
+  return 0;
+}
+
+function normalizeShares(region: RegionState): void {
+  region.dominantShare = clamp(region.dominantShare, 0.05, 0.95);
+  if (typeof region.minorityShare === "number") {
+    region.minorityShare = clamp(region.minorityShare, 0.02, 0.5);
+  }
+
+  const minority = region.minorityShare ?? 0;
+  const total = region.dominantShare + minority;
+
+  if (total > 0.98) {
+    const overflow = total - 0.98;
+    if ((region.minorityShare ?? 0) > 0.02) {
+      region.minorityShare = clamp((region.minorityShare ?? 0) - overflow, 0.02, 0.5);
+    } else {
+      region.dominantShare = clamp(region.dominantShare - overflow, 0.05, 0.95);
+    }
+  }
+
+  const refreshedMinority = region.minorityShare ?? 0;
+  if (refreshedMinority <= 0.02) {
+    region.minorityFaith = undefined;
+    region.minorityShare = undefined;
+  }
+}
+
+function applyFaithShare(region: RegionState, faithId: string, nextShare: number): void {
+  const target = clamp(nextShare, 0, 0.95);
+
+  if (region.dominantFaith === faithId) {
+    region.dominantShare = target;
+  } else if (region.minorityFaith === faithId) {
+    region.minorityShare = target;
+  } else if (target >= 0.04) {
+    region.minorityFaith = faithId;
+    region.minorityShare = Math.max(0.04, target);
+  }
+
+  if (
+    region.minorityFaith &&
+    typeof region.minorityShare === "number" &&
+    region.minorityShare > region.dominantShare
+  ) {
+    const oldDominantFaith = region.dominantFaith;
+    const oldDominantShare = region.dominantShare;
+    region.dominantFaith = region.minorityFaith;
+    region.dominantShare = region.minorityShare;
+    region.minorityFaith = oldDominantFaith;
+    region.minorityShare = oldDominantShare;
+  }
+
+  normalizeShares(region);
+}
+
+function listFrontierRegionIds(
+  ownerId: string,
+  rivalId: string,
+  context: Parameters<SimulationSystem["run"]>[0]
+): string[] {
+  const frontier: string[] = [];
+  const allRegionIds = Object.keys(context.nextState.world.regions).sort();
+
+  for (const regionId of allRegionIds) {
+    const region = context.nextState.world.regions[regionId];
+    if (region.ownerId !== ownerId) {
+      continue;
+    }
+
+    const neighbors = context.staticData.neighborsByRegionId[regionId] ?? [];
+    const touchesRival = neighbors.some((neighborId) => context.nextState.world.regions[neighborId]?.ownerId === rivalId);
+    if (touchesRival) {
+      frontier.push(regionId);
+    }
+  }
+
+  return frontier;
+}
 
 export function createReligionSystem(): SimulationSystem {
   return {
     id: "religion",
     run(context): void {
       const state = context.nextState;
+      const tickScale = Math.max(1, context.tickScale);
       let eventSeq = 0;
 
       for (const kingdomId of Object.keys(state.kingdoms).sort()) {
         const kingdom = state.kingdoms[kingdomId];
         const ownedRegions = getOwnedRegionIds(state, kingdom.id);
+        const kingdomFaith = kingdom.religion.stateFaith;
         const regionalFaithAverage =
           ownedRegions.length === 0
             ? kingdom.religion.cohesion
-            : ownedRegions.reduce((total, regionId) => total + state.world.regions[regionId].localFaithStrength, 0) / ownedRegions.length;
+            : ownedRegions.reduce((total, regionId) => total + faithShare(state.world.regions[regionId], kingdomFaith), 0) / ownedRegions.length;
 
         const clergySupport = kingdom.population.groups.clergy;
         const budgetSupport = kingdom.economy.budgetPriority.religion / 100;
+        kingdom.religion.missionaryBudget = roundTo(clamp(budgetSupport, 0, 1));
 
         let authorityDelta = clergySupport * 0.012 + budgetSupport * 0.01 - kingdom.population.unrest * 0.008;
         let toleranceDelta = 0;
@@ -38,8 +131,8 @@ export function createReligionSystem(): SimulationSystem {
             break;
         }
 
-        kingdom.religion.authority = roundTo(clamp(kingdom.religion.authority + authorityDelta, 0, 1));
-        kingdom.religion.tolerance = roundTo(clamp(kingdom.religion.tolerance + toleranceDelta, 0, 1));
+        kingdom.religion.authority = roundTo(clamp(kingdom.religion.authority + authorityDelta * tickScale, 0, 1));
+        kingdom.religion.tolerance = roundTo(clamp(kingdom.religion.tolerance + toleranceDelta * tickScale, 0, 1));
 
         const cohesionTarget = clamp(
           regionalFaithAverage * 0.55 + kingdom.religion.authority * 0.28 + (1 - kingdom.religion.tolerance) * 0.17,
@@ -48,23 +141,144 @@ export function createReligionSystem(): SimulationSystem {
         );
 
         kingdom.religion.cohesion = roundTo(
-          clamp(kingdom.religion.cohesion + (cohesionTarget - kingdom.religion.cohesion) * 0.08, 0, 1)
+          clamp(kingdom.religion.cohesion + (cohesionTarget - kingdom.religion.cohesion) * 0.08 * tickScale, 0, 1)
         );
 
         const conversionBase = (1 - kingdom.religion.tolerance) * 0.08 + kingdom.religion.authority * 0.07;
         kingdom.religion.conversionPressure = roundTo(clamp(conversionBase, 0, 1));
 
+        const influenceKeys = Object.keys(kingdom.religion.externalInfluenceIn).sort();
+        for (const sourceId of influenceKeys) {
+          const current = kingdom.religion.externalInfluenceIn[sourceId] ?? 0;
+          const decayed = clamp(current - 0.002 * tickScale, 0, 1);
+          if (decayed <= 0.0001) {
+            delete kingdom.religion.externalInfluenceIn[sourceId];
+          } else {
+            kingdom.religion.externalInfluenceIn[sourceId] = roundTo(decayed, 4);
+          }
+        }
+
+        for (const sourceId of influenceKeys) {
+          const influence = kingdom.religion.externalInfluenceIn[sourceId] ?? 0;
+          if (influence <= 0.01) {
+            continue;
+          }
+
+          const sourceKingdom = state.kingdoms[sourceId];
+          if (!sourceKingdom || sourceKingdom.id === kingdom.id) {
+            continue;
+          }
+
+          const frontierRegionIds = listFrontierRegionIds(kingdom.id, sourceKingdom.id, context);
+          if (frontierRegionIds.length === 0) {
+            continue;
+          }
+
+          const missionaryPower = clamp(
+            sourceKingdom.religion.authority * 0.55 + sourceKingdom.religion.missionaryBudget * 0.45,
+            0,
+            1
+          );
+          const resistance = clamp(kingdom.religion.tolerance * 0.5 + kingdom.religion.authority * 0.3 + kingdom.stability / 100 * 0.2, 0, 1);
+          const pressure = clamp(influence * missionaryPower * (1 - resistance), 0, 1);
+          if (pressure <= 0.0005) {
+            continue;
+          }
+
+          const sourceFaith = sourceKingdom.religion.stateFaith;
+          const conversionDeltaBase = pressure * 0.11 * tickScale;
+          let regionsWithProgress = 0;
+
+          for (const regionId of frontierRegionIds.slice(0, 6)) {
+            const region = state.world.regions[regionId];
+            const beforeShare = faithShare(region, sourceFaith);
+            const beforeDominantFaith = region.dominantFaith;
+            const nextShare = clamp(beforeShare + conversionDeltaBase * (1 - region.faithUnrest * 0.35), 0, 1);
+            applyFaithShare(region, sourceFaith, nextShare);
+            region.faithUnrest = roundTo(clamp(region.faithUnrest + pressure * 0.05 * tickScale, 0, 1));
+
+            const afterShare = faithShare(region, sourceFaith);
+            if ((beforeShare < 0.3 && afterShare >= 0.3) || (beforeDominantFaith !== sourceFaith && region.dominantFaith === sourceFaith)) {
+              regionsWithProgress += 1;
+            }
+          }
+
+          if (state.meta.tick % Math.max(1, Math.floor(18 / tickScale)) === 0) {
+            context.events.push({
+              id: createEventId({
+                prefix: "evt_religion",
+                tick: state.meta.tick,
+                systemId: "religion",
+                actorId: sourceKingdom.id,
+                sequence: eventSeq++
+              }),
+              type: "religion.mission_started",
+              actorKingdomId: sourceKingdom.id,
+              targetKingdomId: kingdom.id,
+              payload: {
+                influence: roundTo(influence, 4),
+                pressure: roundTo(pressure, 4)
+              },
+              occurredAt: context.now
+            });
+          }
+
+          if (regionsWithProgress > 0) {
+            context.events.push({
+              id: createEventId({
+                prefix: "evt_religion",
+                tick: state.meta.tick,
+                systemId: "religion",
+                actorId: sourceKingdom.id,
+                sequence: eventSeq++
+              }),
+              type: "religion.conversion_progress",
+              actorKingdomId: sourceKingdom.id,
+              targetKingdomId: kingdom.id,
+              payload: {
+                regionsWithProgress,
+                sourceFaith
+              },
+              occurredAt: context.now
+            });
+          }
+
+          if (influence > 0.8 && kingdom.stability < 35 && state.meta.tick % Math.max(1, Math.floor(20 / tickScale)) === 0) {
+            context.events.push({
+              id: createEventId({
+                prefix: "evt_religion",
+                tick: state.meta.tick,
+                systemId: "religion",
+                actorId: sourceKingdom.id,
+                sequence: eventSeq++
+              }),
+              type: "religion.coup_risk",
+              actorKingdomId: sourceKingdom.id,
+              targetKingdomId: kingdom.id,
+              payload: {
+                influence: roundTo(influence, 4),
+                targetStability: roundTo(kingdom.stability, 2)
+              },
+              occurredAt: context.now
+            });
+          }
+        }
+
         let faithConflict = 0;
 
         for (const regionId of ownedRegions) {
           const region = state.world.regions[regionId];
-          const drift = (kingdom.religion.cohesion - region.localFaithStrength) * kingdom.religion.conversionPressure * 0.06;
+          const currentShare = faithShare(region, kingdomFaith);
+          const drift = (kingdom.religion.cohesion - currentShare) * kingdom.religion.conversionPressure * 0.06 * tickScale;
+          const nextShare = clamp(currentShare + drift, 0, 1);
+          applyFaithShare(region, kingdomFaith, nextShare);
 
-          region.localFaithStrength = roundTo(clamp(region.localFaithStrength + drift, 0, 1));
+          const mismatch = Math.abs(nextShare - kingdom.religion.cohesion);
+          region.faithUnrest = roundTo(clamp(region.faithUnrest + mismatch * 0.03 * tickScale - 0.005 * tickScale, 0, 1));
 
-          if (kingdom.religion.tolerance < 0.3 && Math.abs(region.localFaithStrength - kingdom.religion.cohesion) > 0.24) {
-            region.unrest = roundTo(clamp(region.unrest + 0.012, 0, 1));
-            faithConflict += 0.012;
+          if (kingdom.religion.tolerance < 0.3 && mismatch > 0.24) {
+            region.unrest = roundTo(clamp(region.unrest + 0.012 * tickScale, 0, 1));
+            faithConflict += 0.012 * tickScale;
           }
         }
 
@@ -78,7 +292,7 @@ export function createReligionSystem(): SimulationSystem {
 
         const tensionIndex = (1 - kingdom.religion.tolerance) * 0.55 + faithConflict * 6 + (1 - kingdom.religion.cohesion) * 0.25;
 
-        if (tensionIndex > 0.55 && state.meta.tick % 6 === 0) {
+        if (tensionIndex > 0.55 && state.meta.tick % Math.max(1, Math.floor(6 / tickScale)) === 0) {
           context.events.push({
             id: createEventId({
               prefix: "evt_religion",

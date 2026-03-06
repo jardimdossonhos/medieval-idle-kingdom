@@ -1,6 +1,7 @@
 import maplibregl, { type GeoJSONSource, type Map } from "maplibre-gl";
 import type { FeatureCollection, Geometry } from "geojson";
 import type { KingdomState } from "../../core/models/game-state";
+import type { StaticWorldData } from "../../core/models/static-world-data";
 import type { WorldState } from "../../core/models/world";
 import type { GameMapRenderer, MapLayerMode, MapRenderContext, MapSelection } from "./map-renderer";
 
@@ -10,6 +11,11 @@ interface CountryFeatureProperties {
   ownerId?: string;
   ownerName?: string;
   ownerColor?: string;
+  dominantFaith?: string;
+  dominantShare?: number;
+  minorityFaith?: string;
+  minorityShare?: number;
+  faithColor?: string;
   unrest?: number;
   contested?: number;
   recentlyCaptured?: number;
@@ -62,6 +68,7 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
 
   constructor(
     private readonly container: HTMLElement,
+    private readonly staticData?: StaticWorldData,
     private readonly onRegionSelect?: (selection: MapSelection) => void
   ) {}
 
@@ -145,6 +152,11 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
         feature.properties.ownerId = "neutral";
         feature.properties.ownerName = "Fora da campanha";
         feature.properties.ownerColor = "#857a67";
+        feature.properties.dominantFaith = "unknown";
+        feature.properties.dominantShare = 0;
+        feature.properties.minorityFaith = undefined;
+        feature.properties.minorityShare = undefined;
+        feature.properties.faithColor = "#6f6352";
         feature.properties.unrest = 0;
         feature.properties.contested = 0;
         feature.properties.recentlyCaptured = 0;
@@ -158,6 +170,11 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
       feature.properties.ownerId = owner?.id ?? region.ownerId;
       feature.properties.ownerName = owner?.name ?? region.ownerId;
       feature.properties.ownerColor = colorForKingdom(owner?.id ?? region.ownerId);
+      feature.properties.dominantFaith = region.dominantFaith;
+      feature.properties.dominantShare = region.dominantShare;
+      feature.properties.minorityFaith = region.minorityFaith;
+      feature.properties.minorityShare = region.minorityShare;
+      feature.properties.faithColor = colorForFaith(region.dominantFaith, this.staticData);
       feature.properties.unrest = region.unrest;
       feature.properties.contested = contestedRegionIds.has(regionId) ? 1 : 0;
       feature.properties.recentlyCaptured = isRecentlyCaptured ? 1 : 0;
@@ -398,6 +415,20 @@ export class MapLibreWorldRenderer implements GameMapRenderer {
           0.58
         ]);
         break;
+      case "religion":
+        this.map.setPaintProperty(FILL_LAYER_ID, "fill-color", ["coalesce", ["get", "faithColor"], "#75624a"]);
+        this.map.setPaintProperty(FILL_LAYER_ID, "fill-opacity", [
+          "interpolate",
+          ["linear"],
+          ["coalesce", ["get", "dominantShare"], 0],
+          0,
+          0.44,
+          0.5,
+          0.72,
+          1,
+          0.9
+        ]);
+        break;
     }
   }
 
@@ -520,5 +551,16 @@ function collectBounds(value: unknown, bounds: { minX: number; minY: number; max
 function colorForKingdom(kingdomId: string): string {
   const palette = ["#8f5b3c", "#4f6d52", "#5d5277", "#9b6c2e", "#435b78", "#7d4f5f"];
   const hash = kingdomId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
+}
+
+function colorForFaith(faithId: string, staticData?: StaticWorldData): string {
+  const staticColor = staticData?.religions[faithId]?.color;
+  if (typeof staticColor === "string" && staticColor.length > 0) {
+    return staticColor;
+  }
+
+  const palette = ["#7b4a33", "#ad7b2f", "#4f6c3e", "#b66a6a", "#49657a", "#8a6a9b", "#2f6f74"];
+  const hash = faithId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
   return palette[hash % palette.length];
 }

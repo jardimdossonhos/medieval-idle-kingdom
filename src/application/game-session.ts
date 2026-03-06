@@ -42,6 +42,7 @@ export interface GameSessionDeps {
 type StateListener = (state: GameState) => void;
 
 export type DiplomaticActionType = "alliance" | "non_aggression" | "peace" | "tribute" | "embargo" | "war";
+export type ReligiousActionType = "send_missionaries";
 
 export type RegionActionType = "invest_agriculture" | "invest_infrastructure" | "garrison" | "pacify";
 
@@ -597,6 +598,81 @@ export class GameSession {
     return this.requireState();
   }
 
+  executeReligiousAction(targetKingdomId: string, actionType: ReligiousActionType): PlayerActionResult {
+    const state = this.requireState();
+    const now = this.deps.clock.now();
+    const player = this.getPlayerKingdom(state);
+    const target = state.kingdoms[targetKingdomId];
+
+    if (!target || target.id === player.id) {
+      return { ok: false, message: "Alvo religioso inválido." };
+    }
+
+    const relation = player.diplomacy.relations[target.id];
+    if (!relation) {
+      return { ok: false, message: "Sem rota diplomática para esta ação religiosa." };
+    }
+    relation.actionCooldowns = relation.actionCooldowns ?? {};
+
+    const config = this.getReligiousActionConfig(player.id, target.id, actionType);
+    const cooldownUntil = relation.actionCooldowns[config.cooldownKey] ?? 0;
+    if (cooldownUntil > now) {
+      return { ok: false, message: "Ação religiosa em cooldown.", cooldownUntil };
+    }
+
+    if (!this.canAfford(player.economy.stock, config.cost)) {
+      return { ok: false, message: "Recursos insuficientes para enviar missionários." };
+    }
+
+    this.applyCost(player.economy.stock, config.cost);
+    const roll = this.nextRandom(state);
+    const success = roll <= config.chance;
+
+    relation.actionCooldowns[config.cooldownKey] = now + config.cooldownMs;
+    const reverse = target.diplomacy.relations[player.id];
+    if (reverse) {
+      reverse.actionCooldowns = reverse.actionCooldowns ?? {};
+      reverse.actionCooldowns[config.cooldownKey] = now + config.cooldownMs;
+    }
+
+    if (success) {
+      const currentInfluence = target.religion.externalInfluenceIn[player.id] ?? 0;
+      const boostedInfluence = this.clamp(currentInfluence + config.pressureGain, 0, 1);
+      target.religion.externalInfluenceIn[player.id] = this.round(boostedInfluence, 4);
+
+      this.appendActionLog(
+        "Missionários enviados",
+        `${player.name} iniciou campanha missionária em ${target.name}.`,
+        "info"
+      );
+    } else {
+      player.stability = this.round(this.clamp(player.stability - 0.25, 0, 100));
+      this.appendActionLog(
+        "Campanha missionária bloqueada",
+        `${target.name} reprimiu a tentativa de infiltração religiosa.`,
+        "warning"
+      );
+    }
+
+    this.recordPlayerCommand("religion.action", {
+      targetKingdomId,
+      actionType,
+      chance: this.round(config.chance, 4),
+      roll: this.round(roll, 4),
+      success,
+      pressureGain: this.round(config.pressureGain, 4)
+    });
+    this.persistCurrent();
+    this.emitState();
+
+    return {
+      ok: success,
+      message: success ? "Campanha missionária iniciada." : "Campanha missionária falhou.",
+      chance: this.round(config.chance, 4),
+      cooldownUntil: now + config.cooldownMs
+    };
+  }
+
   getStaticWorldData(): StaticWorldData {
     return this.deps.staticWorldData;
   }
@@ -968,6 +1044,37 @@ export class GameSession {
       commandHash: this.commandHeadHash,
       stateHash: buildStateHash(state),
       state: structuredClone(state)
+    };
+  }
+
+  private getReligiousActionConfig(
+    actorKingdomId: string,
+    targetKingdomId: string,
+    _actionType: ReligiousActionType
+  ): {
+    cooldownKey: string;
+    cooldownMs: number;
+    cost: Partial<Record<ResourceType, number>>;
+    chance: number;
+    pressureGain: number;
+  } {
+    const state = this.requireState();
+    const actor = state.kingdoms[actorKingdomId];
+    const target = state.kingdoms[targetKingdomId];
+
+    const actorMissionaryPower = this.clamp(actor.religion.authority * 0.5 + actor.religion.missionaryBudget * 0.5, 0, 1);
+    const targetResistance = this.clamp(target.religion.authority * 0.45 + target.religion.tolerance * 0.35 + target.stability / 100 * 0.2, 0, 1);
+
+    return {
+      cooldownKey: "religion:send_missionaries",
+      cooldownMs: 90_000,
+      cost: {
+        [ResourceType.Gold]: 18,
+        [ResourceType.Faith]: 26,
+        [ResourceType.Legitimacy]: 2
+      },
+      chance: this.clamp(0.2 + actorMissionaryPower * 0.55 - targetResistance * 0.32, 0.08, 0.9),
+      pressureGain: this.clamp(0.2 + actorMissionaryPower * 0.18, 0.16, 0.42)
     };
   }
 

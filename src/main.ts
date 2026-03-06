@@ -2,7 +2,14 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 import { createInitialState } from "./application/boot/create-initial-state";
 import { createStaticWorldData } from "./application/boot/static-world-data";
-import { GameSession, type DiplomaticActionType, type RegionActionType, type RuntimeMetrics, type TechnologyChoice } from "./application/game-session";
+import {
+  GameSession,
+  type DiplomaticActionType,
+  type RegionActionType,
+  type ReligiousActionType,
+  type RuntimeMetrics,
+  type TechnologyChoice
+} from "./application/game-session";
 import { AutomationLevel, TechnologyDomain, type ResourceType } from "./core/models/enums";
 import { createDefaultSimulationSystems } from "./core/simulation/create-default-systems";
 import type { SaveSummary } from "./core/contracts/game-ports";
@@ -294,6 +301,7 @@ async function bootstrapApp(): Promise<void> {
                 <option value="owner" selected>Domínio</option>
                 <option value="unrest">Instabilidade</option>
                 <option value="war">Contestado/Guerra</option>
+                <option value="religion">Religião</option>
               </select>
             </label>
           </div>
@@ -754,11 +762,19 @@ async function bootstrapApp(): Promise<void> {
     }
 
     const owner = state.kingdoms[region.ownerId];
+    const dominantFaith = staticWorldData.religions[region.dominantFaith];
+    const minorityFaith = region.minorityFaith ? staticWorldData.religions[region.minorityFaith] : null;
+    const minorityText = region.minorityFaith && typeof region.minorityShare === "number"
+      ? `${minorityFaith?.name ?? region.minorityFaith} (${formatNumber(region.minorityShare * 100)}%)`
+      : "Sem minoria relevante";
 
     ui.regionInfo.innerHTML = `
       <div class="summary-grid">
         <span>Nome</span><strong>${regionDef.name}</strong>
         <span>Dono</span><strong>${owner?.name ?? "-"}</strong>
+        <span>Fé dominante</span><strong>${dominantFaith?.name ?? region.dominantFaith} (${formatNumber(region.dominantShare * 100)}%)</strong>
+        <span>Minoria religiosa</span><strong>${minorityText}</strong>
+        <span>Tensão de fé</span><strong>${formatNumber(region.faithUnrest * 100)}%</strong>
         <span>Instabilidade</span><strong>${formatNumber(region.unrest * 100)}%</strong>
         <span>Autonomia</span><strong>${formatNumber(region.autonomy * 100)}%</strong>
         <span>Assimilação</span><strong>${formatNumber(region.assimilation * 100)}%</strong>
@@ -944,6 +960,22 @@ async function bootstrapApp(): Promise<void> {
     return button;
   }
 
+  function createReligiousActionButton(targetId: string, actionType: ReligiousActionType, label: string): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.textContent = label;
+
+    button.addEventListener("click", () => {
+      const result = session.executeReligiousAction(targetId, actionType);
+      const chanceText = typeof result.chance === "number" ? ` (chance ${formatNumber(result.chance * 100)}%)` : "";
+      showToast(`${result.message}${chanceText}`);
+      if (result.ok) {
+        setActiveTab("eventos");
+      }
+    });
+
+    return button;
+  }
+
   function renderDiplomacy(state: GameState): void {
     const player = getPlayerKingdom(state);
     const neighborIds = new Set<string>();
@@ -994,6 +1026,7 @@ async function bootstrapApp(): Promise<void> {
       actions.appendChild(createDiplomacyActionButton(targetId, "tribute", "Tributo"));
       actions.appendChild(createDiplomacyActionButton(targetId, "embargo", "Embargo"));
       actions.appendChild(createDiplomacyActionButton(targetId, "war", "Declarar guerra"));
+      actions.appendChild(createReligiousActionButton(targetId, "send_missionaries", "Enviar missionários"));
 
       row.appendChild(actions);
       ui.diplomacyList.appendChild(row);

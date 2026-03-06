@@ -1,4 +1,4 @@
-import type { StaticWorldData } from "../../core/models/static-world-data";
+import type { ReligionDefinition, StaticWorldData } from "../../core/models/static-world-data";
 import type { RegionDefinition, StrategicRoute } from "../../core/models/world";
 import { WORLD_DEFINITIONS_MAP_ID, WORLD_DEFINITIONS_V1 } from "./generated/world-definitions-v1";
 
@@ -36,6 +36,107 @@ function buildRoutes(definitions: Record<string, RegionDefinition>): StrategicRo
   return routes;
 }
 
+const RELIGIONS_V1: ReligionDefinition[] = [
+  {
+    id: "imperial_church",
+    name: "Igreja Imperial",
+    color: "#7b4a33",
+    bonuses: {
+      economyMult: 1.02,
+      stabilityMult: 1.03,
+      militaryMoraleMult: 1.01,
+      missionaryPower: 1.06,
+      authorityGrowth: 1.07,
+      toleranceBaseline: 0.32,
+      warZeal: 1.02
+    }
+  },
+  {
+    id: "desert_faith",
+    name: "Fé do Deserto",
+    color: "#ad7b2f",
+    bonuses: {
+      economyMult: 1.01,
+      stabilityMult: 1.01,
+      militaryMoraleMult: 1.03,
+      missionaryPower: 1.08,
+      authorityGrowth: 1.04,
+      toleranceBaseline: 0.28,
+      warZeal: 1.08
+    }
+  },
+  {
+    id: "ancestral_cults",
+    name: "Cultos Ancestrais",
+    color: "#4f6c3e",
+    bonuses: {
+      economyMult: 1.01,
+      stabilityMult: 1.05,
+      militaryMoraleMult: 1,
+      missionaryPower: 0.94,
+      authorityGrowth: 0.99,
+      toleranceBaseline: 0.45,
+      warZeal: 0.95
+    }
+  },
+  {
+    id: "lotus_order",
+    name: "Ordem do Lótus",
+    color: "#b66a6a",
+    bonuses: {
+      economyMult: 1.02,
+      stabilityMult: 1.02,
+      militaryMoraleMult: 0.99,
+      missionaryPower: 1.04,
+      authorityGrowth: 1,
+      toleranceBaseline: 0.48,
+      warZeal: 0.97
+    }
+  },
+  {
+    id: "northern_old_gods",
+    name: "Velhos Deuses do Norte",
+    color: "#49657a",
+    bonuses: {
+      economyMult: 0.99,
+      stabilityMult: 1,
+      militaryMoraleMult: 1.06,
+      missionaryPower: 0.92,
+      authorityGrowth: 1.02,
+      toleranceBaseline: 0.25,
+      warZeal: 1.11
+    }
+  },
+  {
+    id: "scholar_sun",
+    name: "Sol dos Eruditos",
+    color: "#8a6a9b",
+    bonuses: {
+      economyMult: 1.04,
+      stabilityMult: 1.01,
+      militaryMoraleMult: 0.98,
+      missionaryPower: 1.03,
+      authorityGrowth: 1,
+      toleranceBaseline: 0.52,
+      warZeal: 0.94
+    }
+  },
+  {
+    id: "sea_saints",
+    name: "Santos do Mar",
+    color: "#2f6f74",
+    bonuses: {
+      economyMult: 1.03,
+      stabilityMult: 1.01,
+      militaryMoraleMult: 1.01,
+      missionaryPower: 1.02,
+      authorityGrowth: 1.01,
+      toleranceBaseline: 0.4,
+      warZeal: 1
+    }
+  }
+];
+
 export function createStaticWorldData(): StaticWorldData {
   const definitions: Record<string, RegionDefinition> = Object.fromEntries(
     [...WORLD_DEFINITIONS_V1]
@@ -48,10 +149,17 @@ export function createStaticWorldData(): StaticWorldData {
     neighborsByRegionId[regionId] = [...definitions[regionId].neighbors].sort();
   }
 
+  const religions = Object.fromEntries(
+    [...RELIGIONS_V1]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((religion) => [religion.id, religion] as const)
+  );
+
   return {
     mapId: WORLD_DEFINITIONS_MAP_ID,
     definitions,
     neighborsByRegionId,
-    routes: buildRoutes(definitions)
+    routes: buildRoutes(definitions),
+    religions
   };
 }

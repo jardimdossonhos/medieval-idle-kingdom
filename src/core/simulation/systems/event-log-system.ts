@@ -91,6 +91,40 @@ function describeEvent(event: DomainEvent, state: GameState): EventDescriptor {
         suggestedAction: "Aumente orçamento religioso ou ajuste política de tolerância."
       };
     }
+    case "religion.mission_started": {
+      const actor = kingdomName(state, event.actorKingdomId);
+      const target = kingdomName(state, event.targetKingdomId);
+      return {
+        title: "Campanha missionária",
+        details: `${actor} iniciou pressão missionária em ${target}.`,
+        severity: "info",
+        suggestedAction: "Use contramedidas religiosas ou eleve tolerância para reduzir impacto.",
+        groupKey: `religion.mission_started|${event.actorKingdomId ?? "none"}|${event.targetKingdomId ?? "none"}`
+      };
+    }
+    case "religion.conversion_progress": {
+      const actor = kingdomName(state, event.actorKingdomId);
+      const target = kingdomName(state, event.targetKingdomId);
+      const regions = Number(event.payload.regionsWithProgress ?? 1);
+      return {
+        title: "Conversões em fronteira",
+        details: `${actor} avançou influência religiosa sobre ${target} em ${regions} região(ões).`,
+        severity: "warning",
+        suggestedAction: "Reforce estabilidade local ou responda com missão própria.",
+        groupKey: `religion.conversion_progress|${event.actorKingdomId ?? "none"}|${event.targetKingdomId ?? "none"}`
+      };
+    }
+    case "religion.coup_risk": {
+      const actor = kingdomName(state, event.actorKingdomId);
+      const target = kingdomName(state, event.targetKingdomId);
+      return {
+        title: "Risco de golpe religioso",
+        details: `${target} está vulnerável a desestabilização por influência de ${actor}.`,
+        severity: "critical",
+        suggestedAction: "Aumente estabilidade e neutralize influência externa imediatamente.",
+        groupKey: `religion.coup_risk|${event.targetKingdomId ?? "none"}`
+      };
+    }
     case "administration.revolt_risk": {
       const actor = kingdomName(state, event.actorKingdomId);
       const regionId = String(event.payload.regionId ?? "região");
